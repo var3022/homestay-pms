@@ -1,6 +1,8 @@
 package com.homestay.pms_backend.repository;
 
 import com.homestay.pms_backend.entity.Room;
+import com.homestay.pms_backend.enums.RoomStatus;
+
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.List;
@@ -22,4 +24,10 @@ public interface RoomRepository extends JpaRepository<Room, UUID> {
     List<Room> findByPropertyId(UUID propertyId);
 
     List<Room> findByRoomTypeId(UUID roomTypeId);
+
+    long countByPropertyIdAndRoomTypeIdAndActiveTrueAndStatusNot(
+            UUID propertyId,
+            UUID roomTypeId,
+            RoomStatus status
+    );
 }

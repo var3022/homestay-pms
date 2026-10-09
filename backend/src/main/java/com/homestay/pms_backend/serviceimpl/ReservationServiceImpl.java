@@ -14,6 +14,7 @@ import com.homestay.pms_backend.exception.BusinessValidationException;
 import com.homestay.pms_backend.exception.DuplicateResourceException;
 import com.homestay.pms_backend.exception.ResourceNotFoundException;
 import com.homestay.pms_backend.mapper.ReservationMapper;
+import com.homestay.pms_backend.mapper.ReservationRoomMapper;
 import com.homestay.pms_backend.repository.BookingSourceRepository;
 import com.homestay.pms_backend.repository.ReservationRepository;
 import com.homestay.pms_backend.repository.GuestRepository;
@@ -24,6 +25,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import com.homestay.pms_backend.repository.ReservationRoomRepository;
 import com.homestay.pms_backend.repository.RoomAssignmentRepository;
+import com.homestay.pms_backend.repository.RoomRepository;
+import com.homestay.pms_backend.repository.RoomTypeRepository;
+import com.homestay.pms_backend.entity.RoomType;
+import com.homestay.pms_backend.enums.RoomStatus;
+
+import java.util.HashSet;
+import java.util.Set;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -43,6 +51,10 @@ public class ReservationServiceImpl implements ReservationService {
     private final ReservationRoomRepository reservationRoomRepository;
     private final RoomAssignmentRepository roomAssignmentRepository;
 
+    private final RoomRepository roomRepository;
+    private final RoomTypeRepository roomTypeRepository;
+    private final ReservationRoomMapper reservationRoomMapper;
+
     @Override
     public ReservationResponse createReservation(
             ReservationCreateRequest request) {
@@ -61,11 +73,24 @@ public class ReservationServiceImpl implements ReservationService {
                 request.getCheckInDate(),
                 request.getCheckOutDate());
 
+        validateRequestedRoomTypesAndAvailability(request);
+
         Reservation reservation =
                 reservationMapper.toEntity(request);
 
         Reservation savedReservation =
                 reservationRepository.saveAndFlush(reservation);
+
+        List<ReservationRoom> reservationRoomsToSave =
+                request.getReservationRooms()
+                        .stream()
+                        .map(roomRequest ->
+                                reservationRoomMapper.toEntity(
+                                        roomRequest,
+                                        savedReservation.getId()))
+                        .toList();
+
+        reservationRoomRepository.saveAll(reservationRoomsToSave);
 
         return reservationMapper.toResponse(savedReservation);
     }
@@ -149,6 +174,73 @@ public class ReservationServiceImpl implements ReservationService {
                 reservationRepository.saveAndFlush(reservation);
 
         return reservationMapper.toResponse(updatedReservation);
+    }
+
+    private void validateRequestedRoomTypesAndAvailability(
+        ReservationCreateRequest request) {
+
+        Set<UUID> requestedRoomTypeIds = new HashSet<>();
+
+        for (var roomRequest : request.getReservationRooms()) {
+
+                UUID roomTypeId = roomRequest.getRoomTypeId();
+
+                if (!requestedRoomTypeIds.add(roomTypeId)) {
+                throw new BusinessValidationException(
+                        "Each room type can appear only once in a reservation request. "
+                                + "Combine quantities for duplicate room types.");
+                }
+
+                RoomType roomType = roomTypeRepository.findById(roomTypeId)
+                        .orElseThrow(() -> new ResourceNotFoundException(
+                                "Room type not found with id: " + roomTypeId));
+
+                if (!roomType.getPropertyId().equals(request.getPropertyId())) {
+                throw new BusinessValidationException(
+                        "The selected room type does not belong to the requested property.");
+                }
+
+                if (!roomType.isActive()) {
+                throw new BusinessValidationException(
+                        "The selected room type is inactive: "
+                                + roomType.getName());
+                }
+
+                long totalRooms =
+                        roomRepository
+                                .countByPropertyIdAndRoomTypeIdAndActiveTrueAndStatusNot(
+                                        request.getPropertyId(),
+                                        roomTypeId,
+                                        RoomStatus.OUT_OF_SERVICE);
+
+                Long reservedQuantity =
+                        reservationRoomRepository
+                                .sumReservedQuantityForOverlappingDates(
+                                        request.getPropertyId(),
+                                        roomTypeId,
+                                        request.getCheckInDate(),
+                                        request.getCheckOutDate(),
+                                        List.of(
+                                                ReservationStatus.PENDING,
+                                                ReservationStatus.CONFIRMED,
+                                                ReservationStatus.CHECKED_IN
+                                        ));
+
+                long alreadyReserved =
+                        reservedQuantity == null ? 0L : reservedQuantity;
+
+                long availableRooms = totalRooms - alreadyReserved;
+
+                if (roomRequest.getQuantity() > availableRooms) {
+                throw new BusinessValidationException(
+                        "Insufficient availability for room type '"
+                                + roomType.getName()
+                                + "'. Requested: "
+                                + roomRequest.getQuantity()
+                                + ", available: "
+                                + Math.max(availableRooms, 0L));
+                }
+        }
     }
 
     private void validateProperty(UUID propertyId) {
