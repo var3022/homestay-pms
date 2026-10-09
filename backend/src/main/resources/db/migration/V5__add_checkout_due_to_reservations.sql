@@ -1,0 +1,3 @@
+ALTER TABLE reservations
+    ADD COLUMN checkout_due BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN checkout_due_at TIMESTAMPTZ;
