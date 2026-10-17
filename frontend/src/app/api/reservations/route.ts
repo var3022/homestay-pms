@@ -1,37 +1,81 @@
 
-import { NextResponse } from "next/server";
-
 export async function GET() {
-  const apiBaseUrl =
-    process.env.PMS_API_BASE_URL ?? "http://localhost:8080";
+    try {
+        const baseUrl = process.env.PMS_API_BASE_URL;
 
-  try {
-    const response = await fetch(
-      `${apiBaseUrl}/api/v1/reservations`,
-      { cache: "no-store" },
-    );
+        if (!baseUrl) {
+            return Response.json(
+                { message: "PMS API URL is not configured." },
+                { status: 500 },
+            );
+        }
 
-    if (!response.ok) {
-      return NextResponse.json(
-        { error: "Unable to load reservations from the PMS backend." },
-        { status: response.status },
-      );
+        const response = await fetch(
+            `${baseUrl}/api/v1/reservations`,
+            { method: "GET", cache: "no-store" },
+        );
+
+        const text = await response.text();
+
+        let data: unknown = null;
+        if (text) {
+            try {
+                data = JSON.parse(text);
+            } catch {
+                data = { message: text };
+            }
+        }
+
+        return Response.json(data, { status: response.status });
+    } catch {
+        return Response.json(
+            { message: "Could not connect to the PMS reservation service." },
+            { status: 502 },
+        );
     }
+}
 
-    const data: unknown = await response.json();
+export async function POST(request: Request) {
 
-    if (!Array.isArray(data)) {
-      return NextResponse.json(
-        { error: "Unexpected reservations API response." },
-        { status: 502 },
-      );
+    try {
+        const baseUrl = process.env.PMS_API_BASE_URL;
+        const propertyId = process.env.PMS_PROPERTY_ID;
+
+        if (!baseUrl || !propertyId) {
+            return Response.json(
+                { message: "PMS API URL or property ID is not configured." },
+                { status: 500 },
+            );
+        }
+
+        const payload = await request.json();
+
+        const response = await fetch(`${baseUrl}/api/v1/reservations`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                ...payload,
+                propertyId,
+            }),
+            cache: "no-store",
+        });
+
+        const text = await response.text();
+
+        let data: unknown = null;
+        if (text) {
+            try {
+                data = JSON.parse(text);
+            } catch {
+                data = { message: text };
+            }
+        }
+
+        return Response.json(data, { status: response.status });
+    } catch {
+        return Response.json(
+            { message: "Could not connect to the PMS reservation service." },
+            { status: 502 },
+        );
     }
-
-    return NextResponse.json(data);
-  } catch {
-    return NextResponse.json(
-      { error: "PMS backend is unavailable." },
-      { status: 502 },
-    );
-  }
 }

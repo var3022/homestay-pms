@@ -1,7 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
+
+const subscribeToDate = () => () => {};
+
+const getTodayInIndia = () =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+
+const getServerToday = () => "";
 
 type Room = {
   id: string;
@@ -87,12 +99,13 @@ export default function DashboardPage() {
   }, []);
 
   
-  const today = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
+  
+  const today = useSyncExternalStore(
+    subscribeToDate,
+    getTodayInIndia,
+    getServerToday,
+  );
+
 
   const excludedStatuses = ["CANCELLED", "NO_SHOW"];
 
