@@ -2,11 +2,17 @@ package com.homestay.pms_backend.serviceimpl;
 
 import com.homestay.pms_backend.dto.request.ReservationRoomAddRequest;
 import com.homestay.pms_backend.dto.response.ReservationRoomResponse;
+import com.homestay.pms_backend.entity.Reservation;
 import com.homestay.pms_backend.entity.ReservationRoom;
+import com.homestay.pms_backend.entity.RoomType;
+import com.homestay.pms_backend.enums.ReservationStatus;
+import com.homestay.pms_backend.enums.RoomStatus;
+import com.homestay.pms_backend.exception.BusinessValidationException;
 import com.homestay.pms_backend.exception.ResourceNotFoundException;
 import com.homestay.pms_backend.mapper.ReservationRoomMapper;
 import com.homestay.pms_backend.repository.ReservationRepository;
 import com.homestay.pms_backend.repository.ReservationRoomRepository;
+import com.homestay.pms_backend.repository.RoomRepository;
 import com.homestay.pms_backend.repository.RoomTypeRepository;
 import com.homestay.pms_backend.service.ReservationRoomService;
 import lombok.RequiredArgsConstructor;
@@ -25,20 +31,71 @@ public class ReservationRoomServiceImpl implements ReservationRoomService {
     private final ReservationRoomMapper reservationRoomMapper;
     private final ReservationRepository reservationRepository;
     private final RoomTypeRepository roomTypeRepository;
+    private final RoomRepository roomRepository;
 
     @Override
     public ReservationRoomResponse addReservationRoom(ReservationRoomAddRequest request) {
 
-        if (!reservationRepository.existsById(request.getReservationId())) {
-                throw new ResourceNotFoundException(
+        Reservation reservation = reservationRepository.findById(request.getReservationId())
+                .orElseThrow(() -> new ResourceNotFoundException(
                         "Reservation not found with id: " + request.getReservationId()
-                );
+                ));
+
+        if (reservation.getStatus() == ReservationStatus.CANCELLED) {
+            throw new BusinessValidationException("Cannot add rooms to a cancelled reservation");
+        }
+        if (reservation.getStatus() == ReservationStatus.CHECKED_IN) {
+            throw new BusinessValidationException("Cannot add rooms to a checked-in reservation");
+        }
+        if (reservation.getStatus() == ReservationStatus.CHECKED_OUT) {
+            throw new BusinessValidationException("Cannot add rooms to a checked-out reservation");
+        }
+        if (reservation.getStatus() == ReservationStatus.NO_SHOW) {
+            throw new BusinessValidationException("Cannot add rooms to a no-show reservation");
         }
 
-        if (!roomTypeRepository.existsById(request.getRoomTypeId())) {
-                throw new ResourceNotFoundException(
+        RoomType roomType = roomTypeRepository.findById(request.getRoomTypeId())
+                .orElseThrow(() -> new ResourceNotFoundException(
                         "Room type not found with id: " + request.getRoomTypeId()
-                );
+                ));
+
+        if (!roomType.getPropertyId().equals(reservation.getPropertyId())) {
+            throw new BusinessValidationException(
+                    "The selected room type does not belong to the reservation property");
+        }
+
+        if (!roomType.isActive()) {
+            throw new BusinessValidationException(
+                    "The selected room type is inactive: " + roomType.getName());
+        }
+
+        long totalRooms = roomRepository.countByPropertyIdAndRoomTypeIdAndActiveTrueAndStatusNot(
+                reservation.getPropertyId(),
+                request.getRoomTypeId(),
+                RoomStatus.OUT_OF_SERVICE);
+
+        Long reservedQuantity = reservationRoomRepository.sumReservedQuantityForOverlappingDates(
+                reservation.getPropertyId(),
+                request.getRoomTypeId(),
+                reservation.getCheckInDate(),
+                reservation.getCheckOutDate(),
+                List.of(
+                        ReservationStatus.PENDING,
+                        ReservationStatus.CONFIRMED,
+                        ReservationStatus.CHECKED_IN
+                ));
+
+        long alreadyReserved = reservedQuantity == null ? 0L : reservedQuantity;
+        long availableRooms = totalRooms - alreadyReserved;
+
+        if (request.getQuantity() > availableRooms) {
+            throw new BusinessValidationException(
+                    "Insufficient availability for room type '"
+                            + roomType.getName()
+                            + "'. Requested: "
+                            + request.getQuantity()
+                            + ", available: "
+                            + Math.max(availableRooms, 0L));
         }
 
         ReservationRoom reservationRoom =

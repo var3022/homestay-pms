@@ -76,6 +76,8 @@ public class ReservationMapper {
         response.setExternalBookingId(reservation.getExternalBookingId());
         response.setStatus(reservation.getStatus());
         response.setSpecialRequests(reservation.getSpecialRequests());
+        response.setCheckoutDue(reservation.isCheckoutDue());
+        response.setCheckoutDueAt(reservation.getCheckoutDueAt());
         response.setCreatedAt(reservation.getCreatedAt());
         response.setUpdatedAt(reservation.getUpdatedAt());
 

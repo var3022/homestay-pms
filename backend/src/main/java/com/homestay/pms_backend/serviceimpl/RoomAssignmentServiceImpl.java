@@ -6,6 +6,7 @@ import com.homestay.pms_backend.entity.Reservation;
 import com.homestay.pms_backend.entity.ReservationRoom;
 import com.homestay.pms_backend.entity.Room;
 import com.homestay.pms_backend.entity.RoomAssignment;
+import com.homestay.pms_backend.enums.ReservationStatus;
 import com.homestay.pms_backend.enums.RoomAssignmentStatus;
 import com.homestay.pms_backend.enums.RoomStatus;
 import com.homestay.pms_backend.exception.BusinessValidationException;
@@ -57,6 +58,24 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
                                         + reservationRoom.getReservationId()
                         ));
 
+        if (reservation.getStatus() == ReservationStatus.CANCELLED) {
+            throw new BusinessValidationException(
+                    "Cannot assign a room to a cancelled reservation"
+            );
+        }
+
+        if (reservation.getStatus() == ReservationStatus.CHECKED_OUT) {
+            throw new BusinessValidationException(
+                    "Cannot assign a room to a checked-out reservation"
+            );
+        }
+
+        if (reservation.getStatus() == ReservationStatus.NO_SHOW) {
+            throw new BusinessValidationException(
+                    "Cannot assign a room to a no-show reservation"
+            );
+        }
+
         Room room =
                 roomRepository.findById(request.getRoomId())
                         .orElseThrow(() ->
@@ -71,9 +90,9 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
             );
         }
 
-        if (room.getStatus() != RoomStatus.AVAILABLE) {
+        if (room.getStatus() == RoomStatus.OUT_OF_SERVICE) {
             throw new BusinessValidationException(
-                    "Room is not available for assignment"
+                    "Room is out of service and cannot be assigned"
             );
         }
 
@@ -227,9 +246,32 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
                                 ));
 
         if (assignment.getStatus() == RoomAssignmentStatus.RELEASED) {
-                throw new BusinessValidationException(
-                        "Room assignment is already released"
-                );
+            throw new BusinessValidationException(
+                    "Room assignment is already released"
+            );
+        }
+
+        ReservationRoom reservationRoom =
+                reservationRoomRepository.findById(assignment.getReservationRoomId())
+                        .orElseThrow(() ->
+                                new ResourceNotFoundException(
+                                        "Reservation room not found with id: "
+                                                + assignment.getReservationRoomId()
+                                ));
+
+        Reservation reservation =
+                reservationRepository.findById(reservationRoom.getReservationId())
+                        .orElseThrow(() ->
+                                new ResourceNotFoundException(
+                                        "Reservation not found with id: "
+                                                + reservationRoom.getReservationId()
+                                ));
+
+        if (reservation.getStatus() == ReservationStatus.CHECKED_IN) {
+            throw new BusinessValidationException(
+                    "Cannot release room assignment for a checked-in reservation through the generic release endpoint. "
+                            + "Room release must be performed during checkout or room reassignment."
+            );
         }
 
         assignment.setStatus(RoomAssignmentStatus.RELEASED);

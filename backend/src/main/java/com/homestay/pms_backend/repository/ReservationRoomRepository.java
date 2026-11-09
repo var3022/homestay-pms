@@ -36,5 +36,26 @@ public interface ReservationRoomRepository
             @Param("checkOutDate") LocalDate checkOutDate,
             @Param("statuses") List<ReservationStatus> statuses
     );
+
+    @Query("""
+            SELECT COALESCE(SUM(rr.quantity - rr.cancelledQuantity), 0)
+            FROM ReservationRoom rr
+            JOIN Reservation r ON r.id = rr.reservationId
+            WHERE r.propertyId = :propertyId
+              AND rr.roomTypeId = :roomTypeId
+              AND r.status IN :statuses
+              AND rr.status <> com.homestay.pms_backend.enums.ReservationRoomStatus.CANCELLED
+              AND r.checkInDate < :checkOutDate
+              AND r.checkOutDate > :checkInDate
+              AND r.id <> :excludeReservationId
+            """)
+    Long sumReservedQuantityForOverlappingDatesExcludingReservation(
+            @Param("propertyId") UUID propertyId,
+            @Param("roomTypeId") UUID roomTypeId,
+            @Param("checkInDate") LocalDate checkInDate,
+            @Param("checkOutDate") LocalDate checkOutDate,
+            @Param("statuses") List<ReservationStatus> statuses,
+            @Param("excludeReservationId") UUID excludeReservationId
+    );
 }
 

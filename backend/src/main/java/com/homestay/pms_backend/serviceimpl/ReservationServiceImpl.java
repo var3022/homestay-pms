@@ -30,10 +30,13 @@ import com.homestay.pms_backend.repository.RoomTypeRepository;
 import com.homestay.pms_backend.entity.RoomType;
 import com.homestay.pms_backend.enums.RoomStatus;
 
-import java.util.HashSet;
-import java.util.Set;
+import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -162,18 +165,111 @@ public class ReservationServiceImpl implements ReservationService {
                         + "Changes must be confirmed by the booking platform.");
         }
 
-        // Apply changes only to eligible direct reservations.
-        reservationMapper.updateEntity(reservation, request);
+        LocalDate targetCheckInDate = request.getCheckInDate() != null
+                ? request.getCheckInDate()
+                : reservation.getCheckInDate();
+
+        LocalDate targetCheckOutDate = request.getCheckOutDate() != null
+                ? request.getCheckOutDate()
+                : reservation.getCheckOutDate();
 
         // Validate the resulting dates.
-        validateDates(
-                reservation.getCheckInDate(),
-                reservation.getCheckOutDate());
+        validateDates(targetCheckInDate, targetCheckOutDate);
+
+        boolean datesChanged = !targetCheckInDate.equals(reservation.getCheckInDate())
+                || !targetCheckOutDate.equals(reservation.getCheckOutDate());
+
+        if (datesChanged) {
+            validateDateChangeSafety(reservation, targetCheckInDate, targetCheckOutDate);
+        }
+
+        // Apply changes only to eligible direct reservations.
+        reservationMapper.updateEntity(reservation, request);
 
         Reservation updatedReservation =
                 reservationRepository.saveAndFlush(reservation);
 
         return reservationMapper.toResponse(updatedReservation);
+    }
+
+    private void validateDateChangeSafety(
+            Reservation reservation,
+            LocalDate targetCheckInDate,
+            LocalDate targetCheckOutDate) {
+
+        List<ReservationRoom> reservationRooms =
+                reservationRoomRepository.findByReservationId(reservation.getId());
+
+        // 1. Reject changes that would invalidate existing physical room assignments
+        for (ReservationRoom rr : reservationRooms) {
+            List<RoomAssignment> assignments =
+                    roomAssignmentRepository.findByReservationRoomId(rr.getId());
+
+            for (RoomAssignment assignment : assignments) {
+                if (assignment.getStatus() == RoomAssignmentStatus.ASSIGNED) {
+                    if (assignment.getAssignedFrom().isBefore(targetCheckInDate)
+                            || assignment.getAssignedUntil().isAfter(targetCheckOutDate)) {
+                        throw new BusinessValidationException(
+                                "Cannot change reservation dates because existing room assignments would fall outside the new reservation dates. Adjust or release room assignments first.");
+                    }
+                }
+            }
+        }
+
+        // 2. Validate inventory for changed dates
+        Map<UUID, Integer> activeQuantityByRoomType = new HashMap<>();
+        for (ReservationRoom rr : reservationRooms) {
+            int activeQuantity = rr.getQuantity() - rr.getCancelledQuantity();
+            if (activeQuantity > 0) {
+                activeQuantityByRoomType.merge(rr.getRoomTypeId(), activeQuantity, Integer::sum);
+            }
+        }
+
+        for (Map.Entry<UUID, Integer> entry : activeQuantityByRoomType.entrySet()) {
+            UUID roomTypeId = entry.getKey();
+            int requiredQuantity = entry.getValue();
+
+            RoomType roomType = roomTypeRepository.findById(roomTypeId)
+                    .orElseThrow(() -> new ResourceNotFoundException(
+                            "Room type not found with id: " + roomTypeId));
+
+            long totalRooms =
+                    roomRepository
+                            .countByPropertyIdAndRoomTypeIdAndActiveTrueAndStatusNot(
+                                    reservation.getPropertyId(),
+                                    roomTypeId,
+                                    RoomStatus.OUT_OF_SERVICE);
+
+            Long reservedQuantity =
+                    reservationRoomRepository
+                            .sumReservedQuantityForOverlappingDatesExcludingReservation(
+                                    reservation.getPropertyId(),
+                                    roomTypeId,
+                                    targetCheckInDate,
+                                    targetCheckOutDate,
+                                    List.of(
+                                            ReservationStatus.PENDING,
+                                            ReservationStatus.CONFIRMED,
+                                            ReservationStatus.CHECKED_IN
+                                    ),
+                                    reservation.getId()
+                            );
+
+            long alreadyReserved =
+                    reservedQuantity == null ? 0L : reservedQuantity;
+
+            long availableRooms = totalRooms - alreadyReserved;
+
+            if (requiredQuantity > availableRooms) {
+                throw new BusinessValidationException(
+                        "Insufficient availability for room type '"
+                                + roomType.getName()
+                                + "' for the requested dates. Requested: "
+                                + requiredQuantity
+                                + ", available: "
+                                + Math.max(availableRooms, 0L));
+            }
+        }
     }
 
     private void validateRequestedRoomTypesAndAvailability(
