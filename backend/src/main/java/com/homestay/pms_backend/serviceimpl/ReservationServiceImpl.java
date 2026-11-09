@@ -200,17 +200,25 @@ public class ReservationServiceImpl implements ReservationService {
         List<ReservationRoom> reservationRooms =
                 reservationRoomRepository.findByReservationId(reservation.getId());
 
-        // 1. Reject changes that would invalidate existing physical room assignments
+        // 1. Ensure every active room assignment covers the complete new reservation date range
         for (ReservationRoom rr : reservationRooms) {
+            if (rr.getStatus() == ReservationRoomStatus.CANCELLED) {
+                continue;
+            }
+
             List<RoomAssignment> assignments =
                     roomAssignmentRepository.findByReservationRoomId(rr.getId());
 
             for (RoomAssignment assignment : assignments) {
                 if (assignment.getStatus() == RoomAssignmentStatus.ASSIGNED) {
-                    if (assignment.getAssignedFrom().isBefore(targetCheckInDate)
-                            || assignment.getAssignedUntil().isAfter(targetCheckOutDate)) {
+                    if (!assignment.getAssignedFrom().equals(targetCheckInDate)
+                            || !assignment.getAssignedUntil().equals(targetCheckOutDate)) {
                         throw new BusinessValidationException(
-                                "Cannot change reservation dates because existing room assignments would fall outside the new reservation dates. Adjust or release room assignments first.");
+                                "Cannot change reservation dates because active room assignment for room "
+                                        + assignment.getRoomId()
+                                        + " (" + assignment.getAssignedFrom() + " to " + assignment.getAssignedUntil() + ")"
+                                        + " does not cover the complete new stay period (" + targetCheckInDate + " to " + targetCheckOutDate + "). "
+                                        + "Please adjust or reassign the room first.");
                     }
                 }
             }
@@ -219,6 +227,10 @@ public class ReservationServiceImpl implements ReservationService {
         // 2. Validate inventory for changed dates
         Map<UUID, Integer> activeQuantityByRoomType = new HashMap<>();
         for (ReservationRoom rr : reservationRooms) {
+            if (rr.getStatus() == ReservationRoomStatus.CANCELLED) {
+                continue;
+            }
+
             int activeQuantity = rr.getQuantity() - rr.getCancelledQuantity();
             if (activeQuantity > 0) {
                 activeQuantityByRoomType.merge(rr.getRoomTypeId(), activeQuantity, Integer::sum);

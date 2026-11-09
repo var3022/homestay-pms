@@ -40,6 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -210,8 +211,8 @@ class ReservationServiceImplTest {
     }
 
     @Test
-    @DisplayName("updateReservation date change rejects when existing physical assignment would fall outside new stay dates")
-    void updateReservation_dateChange_rejectsWhenAssignmentFallsOutsideNewStayDates() {
+    @DisplayName("updateReservation extending checkout rejects when assignment still ends on the old checkout date")
+    void updateReservation_extendingCheckout_rejectsWhenAssignmentEndsOnOldCheckoutDate() {
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
         when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
 
@@ -234,15 +235,130 @@ class ReservationServiceImplTest {
 
         when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(assignment));
 
-        // Shifting check-in from Nov 10 to Nov 11 would invalidate assignment starting Nov 10
+        // Extending checkout to Nov 15 while assignment still ends Nov 12
         ReservationUpdateRequest request = new ReservationUpdateRequest();
-        request.setCheckInDate(LocalDate.of(2026, 11, 11));
+        request.setCheckOutDate(LocalDate.of(2026, 11, 15));
 
         assertThatThrownBy(() -> reservationService.updateReservation(reservationId, request))
                 .isInstanceOf(BusinessValidationException.class)
-                .hasMessageContaining("Cannot change reservation dates because existing room assignments would fall outside the new reservation dates");
+                .hasMessageContaining("does not cover the complete new stay period (2026-11-10 to 2026-11-15)");
 
         verify(reservationRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("updateReservation moving check-in earlier rejects when existing assignment starts after new check-in date")
+    void updateReservation_movingCheckInEarlier_rejectsWhenAssignmentStartsAfterNewCheckInDate() {
+        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setReservationId(reservationId);
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        rr.setCancelledQuantity(0);
+
+        when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of(rr));
+
+        RoomAssignment assignment = new RoomAssignment();
+        assignment.setId(UUID.randomUUID());
+        assignment.setReservationRoomId(rr.getId());
+        assignment.setRoomId(UUID.randomUUID());
+        assignment.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        assignment.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        assignment.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(assignment));
+
+        // Moving check-in earlier to Nov 08 while assignment starts on Nov 10
+        ReservationUpdateRequest request = new ReservationUpdateRequest();
+        request.setCheckInDate(LocalDate.of(2026, 11, 8));
+
+        assertThatThrownBy(() -> reservationService.updateReservation(reservationId, request))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("does not cover the complete new stay period (2026-11-08 to 2026-11-12)");
+
+        verify(reservationRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("updateReservation shrinking dates rejects when existing assignment extends beyond new dates")
+    void updateReservation_shrinkingDates_rejectsWhenAssignmentExtendsBeyondNewDates() {
+        reservation.setCheckInDate(LocalDate.of(2026, 11, 10));
+        reservation.setCheckOutDate(LocalDate.of(2026, 11, 15));
+
+        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setReservationId(reservationId);
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        rr.setCancelledQuantity(0);
+
+        when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of(rr));
+
+        RoomAssignment assignment = new RoomAssignment();
+        assignment.setId(UUID.randomUUID());
+        assignment.setReservationRoomId(rr.getId());
+        assignment.setRoomId(UUID.randomUUID());
+        assignment.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        assignment.setAssignedUntil(LocalDate.of(2026, 11, 15));
+        assignment.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(assignment));
+
+        // Shrinking checkout to Nov 13 while assignment is for Nov 10 to Nov 15
+        ReservationUpdateRequest request = new ReservationUpdateRequest();
+        request.setCheckOutDate(LocalDate.of(2026, 11, 13));
+
+        assertThatThrownBy(() -> reservationService.updateReservation(reservationId, request))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("does not cover the complete new stay period (2026-11-10 to 2026-11-13)");
+
+        verify(reservationRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("updateReservation date change succeeds when no active physical assignments exist and inventory is available")
+    void updateReservation_dateChange_succeedsWithNoActivePhysicalAssignments() {
+        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setReservationId(reservationId);
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        rr.setCancelledQuantity(0);
+
+        when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of(rr));
+        // No physical assignments exist
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of());
+        when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
+
+        when(roomRepository.countByPropertyIdAndRoomTypeIdAndActiveTrueAndStatusNot(
+                propertyId, roomTypeId, RoomStatus.OUT_OF_SERVICE)).thenReturn(3L);
+        when(reservationRoomRepository.sumReservedQuantityForOverlappingDatesExcludingReservation(
+                eq(propertyId), eq(roomTypeId), eq(LocalDate.of(2026, 11, 10)), eq(LocalDate.of(2026, 11, 14)),
+                any(), eq(reservationId))).thenReturn(1L);
+
+        ReservationUpdateRequest request = new ReservationUpdateRequest();
+        request.setCheckOutDate(LocalDate.of(2026, 11, 14));
+
+        when(reservationRepository.saveAndFlush(any(Reservation.class))).thenAnswer(i -> i.getArgument(0));
+        ReservationResponse mockResponse = new ReservationResponse();
+        mockResponse.setId(reservationId);
+        when(reservationMapper.toResponse(any())).thenReturn(mockResponse);
+
+        ReservationResponse response = reservationService.updateReservation(reservationId, request);
+
+        assertThat(response).isNotNull();
+        assertThat(response.getId()).isEqualTo(reservationId);
+        verify(reservationMapper).updateEntity(reservation, request);
+        verify(reservationRepository).saveAndFlush(reservation);
     }
 
     @Test
@@ -283,7 +399,7 @@ class ReservationServiceImplTest {
     }
 
     @Test
-    @DisplayName("updateReservation date change succeeds when inventory is available and existing assignments remain within new dates")
+    @DisplayName("updateReservation date change succeeds when inventory is available and existing assignments cover complete new stay")
     void updateReservation_dateChange_succeedsWhenInventoryIsAvailableAndAssignmentsValid() {
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
         when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
@@ -302,7 +418,7 @@ class ReservationServiceImplTest {
         assignment.setReservationRoomId(rr.getId());
         assignment.setRoomId(UUID.randomUUID());
         assignment.setAssignedFrom(LocalDate.of(2026, 11, 10));
-        assignment.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        assignment.setAssignedUntil(LocalDate.of(2026, 11, 14));
         assignment.setStatus(RoomAssignmentStatus.ASSIGNED);
 
         when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(assignment));
@@ -329,6 +445,80 @@ class ReservationServiceImplTest {
         assertThat(response.getId()).isEqualTo(reservationId);
         verify(reservationMapper).updateEntity(reservation, request);
         verify(reservationRepository).saveAndFlush(reservation);
+    }
+
+    @Test
+    @DisplayName("updateReservation date change ignores CANCELLED ReservationRooms when validating inventory and assignments")
+    void updateReservation_dateChange_ignoresCancelledReservationRooms_whenValidatingInventoryAndAssignments() {
+        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
+
+        // 1. CANCELLED reservation room with remaining quantity = 2 and an active assignment ending on the old checkout date
+        ReservationRoom cancelledRr = new ReservationRoom();
+        cancelledRr.setId(UUID.randomUUID());
+        cancelledRr.setReservationId(reservationId);
+        cancelledRr.setRoomTypeId(roomTypeId);
+        cancelledRr.setQuantity(2);
+        cancelledRr.setCancelledQuantity(0);
+        cancelledRr.setStatus(ReservationRoomStatus.CANCELLED);
+
+        RoomAssignment cancelledAssignment = new RoomAssignment();
+        cancelledAssignment.setId(UUID.randomUUID());
+        cancelledAssignment.setReservationRoomId(cancelledRr.getId());
+        cancelledAssignment.setRoomId(UUID.randomUUID());
+        cancelledAssignment.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        cancelledAssignment.setAssignedUntil(LocalDate.of(2026, 11, 12)); // Old checkout date
+        cancelledAssignment.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        // 2. PARTIALLY_CANCELLED reservation room with quantity = 2, cancelled = 1 (active = 1) and assignment covering new stay
+        ReservationRoom partiallyCancelledRr = new ReservationRoom();
+        partiallyCancelledRr.setId(UUID.randomUUID());
+        partiallyCancelledRr.setReservationId(reservationId);
+        partiallyCancelledRr.setRoomTypeId(roomTypeId);
+        partiallyCancelledRr.setQuantity(2);
+        partiallyCancelledRr.setCancelledQuantity(1);
+        partiallyCancelledRr.setStatus(ReservationRoomStatus.PARTIALLY_CANCELLED);
+
+        RoomAssignment activeAssignment = new RoomAssignment();
+        activeAssignment.setId(UUID.randomUUID());
+        activeAssignment.setReservationRoomId(partiallyCancelledRr.getId());
+        activeAssignment.setRoomId(UUID.randomUUID());
+        activeAssignment.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        activeAssignment.setAssignedUntil(LocalDate.of(2026, 11, 15)); // New checkout date
+        activeAssignment.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        when(reservationRoomRepository.findByReservationId(reservationId))
+                .thenReturn(List.of(cancelledRr, partiallyCancelledRr));
+        lenient().when(roomAssignmentRepository.findByReservationRoomId(cancelledRr.getId()))
+                .thenReturn(List.of(cancelledAssignment));
+        when(roomAssignmentRepository.findByReservationRoomId(partiallyCancelledRr.getId()))
+                .thenReturn(List.of(activeAssignment));
+
+        when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
+
+        // Capacity: 2 total rooms, 1 booked by others -> 1 available
+        when(roomRepository.countByPropertyIdAndRoomTypeIdAndActiveTrueAndStatusNot(
+                propertyId, roomTypeId, RoomStatus.OUT_OF_SERVICE)).thenReturn(2L);
+        when(reservationRoomRepository.sumReservedQuantityForOverlappingDatesExcludingReservation(
+                eq(propertyId), eq(roomTypeId), eq(LocalDate.of(2026, 11, 10)), eq(LocalDate.of(2026, 11, 15)),
+                any(), eq(reservationId))).thenReturn(1L);
+
+        // Request extension to Nov 15
+        ReservationUpdateRequest request = new ReservationUpdateRequest();
+        request.setCheckOutDate(LocalDate.of(2026, 11, 15));
+
+        when(reservationRepository.saveAndFlush(any(Reservation.class))).thenAnswer(i -> i.getArgument(0));
+        ReservationResponse mockResponse = new ReservationResponse();
+        mockResponse.setId(reservationId);
+        when(reservationMapper.toResponse(any())).thenReturn(mockResponse);
+
+        ReservationResponse response = reservationService.updateReservation(reservationId, request);
+
+        assertThat(response).isNotNull();
+        assertThat(response.getId()).isEqualTo(reservationId);
+        verify(reservationMapper).updateEntity(reservation, request);
+        verify(reservationRepository).saveAndFlush(reservation);
+        verify(roomAssignmentRepository, never()).findByReservationRoomId(cancelledRr.getId());
     }
 
     @Test

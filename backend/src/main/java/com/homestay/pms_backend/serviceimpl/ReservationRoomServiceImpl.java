@@ -5,6 +5,7 @@ import com.homestay.pms_backend.dto.response.ReservationRoomResponse;
 import com.homestay.pms_backend.entity.Reservation;
 import com.homestay.pms_backend.entity.ReservationRoom;
 import com.homestay.pms_backend.entity.RoomType;
+import com.homestay.pms_backend.enums.ReservationRoomStatus;
 import com.homestay.pms_backend.enums.ReservationStatus;
 import com.homestay.pms_backend.enums.RoomStatus;
 import com.homestay.pms_backend.exception.BusinessValidationException;
@@ -69,33 +70,49 @@ public class ReservationRoomServiceImpl implements ReservationRoomService {
                     "The selected room type is inactive: " + roomType.getName());
         }
 
+        List<ReservationRoom> existingRooms =
+                reservationRoomRepository.findByReservationId(reservation.getId());
+
+        int existingActiveQuantity = existingRooms.stream()
+                .filter(r -> r.getStatus() != ReservationRoomStatus.CANCELLED)
+                .filter(r -> r.getRoomTypeId().equals(request.getRoomTypeId()))
+                .mapToInt(r -> r.getQuantity() - r.getCancelledQuantity())
+                .sum();
+
         long totalRooms = roomRepository.countByPropertyIdAndRoomTypeIdAndActiveTrueAndStatusNot(
                 reservation.getPropertyId(),
                 request.getRoomTypeId(),
                 RoomStatus.OUT_OF_SERVICE);
 
-        Long reservedQuantity = reservationRoomRepository.sumReservedQuantityForOverlappingDates(
-                reservation.getPropertyId(),
-                request.getRoomTypeId(),
-                reservation.getCheckInDate(),
-                reservation.getCheckOutDate(),
-                List.of(
-                        ReservationStatus.PENDING,
-                        ReservationStatus.CONFIRMED,
-                        ReservationStatus.CHECKED_IN
-                ));
+        Long reservedQuantityByOthers = reservationRoomRepository
+                .sumReservedQuantityForOverlappingDatesExcludingReservation(
+                        reservation.getPropertyId(),
+                        request.getRoomTypeId(),
+                        reservation.getCheckInDate(),
+                        reservation.getCheckOutDate(),
+                        List.of(
+                                ReservationStatus.PENDING,
+                                ReservationStatus.CONFIRMED,
+                                ReservationStatus.CHECKED_IN
+                        ),
+                        reservation.getId()
+                );
 
-        long alreadyReserved = reservedQuantity == null ? 0L : reservedQuantity;
-        long availableRooms = totalRooms - alreadyReserved;
+        long alreadyReservedByOthers = reservedQuantityByOthers == null ? 0L : reservedQuantityByOthers;
+        long availableExcludingThis = totalRooms - alreadyReservedByOthers;
+        int totalRequiredQuantity = existingActiveQuantity + request.getQuantity();
 
-        if (request.getQuantity() > availableRooms) {
+        if (totalRequiredQuantity > availableExcludingThis) {
+            long remainingAvailable = Math.max(availableExcludingThis - existingActiveQuantity, 0L);
             throw new BusinessValidationException(
                     "Insufficient availability for room type '"
                             + roomType.getName()
-                            + "'. Requested: "
-                            + request.getQuantity()
-                            + ", available: "
-                            + Math.max(availableRooms, 0L));
+                            + "'. Total required: "
+                            + totalRequiredQuantity
+                            + " (existing: " + existingActiveQuantity + ", requested addition: " + request.getQuantity() + ")"
+                            + ", available capacity: "
+                            + Math.max(availableExcludingThis, 0L)
+                            + " (can add at most: " + remainingAvailable + ")");
         }
 
         ReservationRoom reservationRoom =

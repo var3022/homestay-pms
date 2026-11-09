@@ -274,6 +274,34 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
             );
         }
 
+        // Verify that releasing this assignment does not leave insufficient physical room coverage
+        List<RoomAssignment> roomAssignments =
+                roomAssignmentRepository.findByReservationRoomId(reservationRoom.getId());
+
+        int requiredQuantity = reservationRoom.getQuantity() - reservationRoom.getCancelledQuantity();
+
+        if (requiredQuantity > 0) {
+            LocalDate start = assignment.getAssignedFrom();
+            LocalDate end = assignment.getAssignedUntil();
+
+            for (LocalDate date = start; date.isBefore(end); date = date.plusDays(1)) {
+                final LocalDate checkDate = date;
+                long activeCountOnDate = roomAssignments.stream()
+                        .filter(a -> !a.getId().equals(assignment.getId()))
+                        .filter(a -> a.getStatus() == RoomAssignmentStatus.ASSIGNED)
+                        .filter(a -> !checkDate.isBefore(a.getAssignedFrom()) && checkDate.isBefore(a.getAssignedUntil()))
+                        .count();
+
+                if (activeCountOnDate < requiredQuantity) {
+                    throw new BusinessValidationException(
+                            "Cannot release room assignment because it would leave insufficient room coverage for date "
+                                    + checkDate
+                                    + ". Required: " + requiredQuantity + ", remaining: " + activeCountOnDate + ". "
+                                    + "Assign a replacement room before releasing this assignment.");
+                }
+            }
+        }
+
         assignment.setStatus(RoomAssignmentStatus.RELEASED);
 
         RoomAssignment savedAssignment =

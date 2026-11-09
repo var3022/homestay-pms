@@ -25,6 +25,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -185,14 +186,15 @@ class ReservationRoomServiceImplTest {
     void addReservationRoom_rejectsWhenQuantityExceedsAvailableInventory() {
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
         when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
+        when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of());
 
         // 3 active non-OOS rooms
         when(roomRepository.countByPropertyIdAndRoomTypeIdAndActiveTrueAndStatusNot(
                 propertyId, roomTypeId, RoomStatus.OUT_OF_SERVICE)).thenReturn(3L);
 
-        // 3 rooms already reserved on these stay dates
-        when(reservationRoomRepository.sumReservedQuantityForOverlappingDates(
-                eq(propertyId), eq(roomTypeId), eq(reservation.getCheckInDate()), eq(reservation.getCheckOutDate()), any()))
+        // 3 rooms already reserved by OTHER reservations on these stay dates
+        when(reservationRoomRepository.sumReservedQuantityForOverlappingDatesExcludingReservation(
+                eq(propertyId), eq(roomTypeId), eq(reservation.getCheckInDate()), eq(reservation.getCheckOutDate()), any(), eq(reservationId)))
                 .thenReturn(3L);
 
         // available = 3 - 3 = 0, requested = 1
@@ -204,15 +206,158 @@ class ReservationRoomServiceImplTest {
     }
 
     @Test
+    @DisplayName("addReservationRoom rejects when total required quantity (existing + requested) exceeds available inventory")
+    void addReservationRoom_rejectsWhenTotalRequiredQuantityExceedsInventory() {
+        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
+
+        // Reservation already has 1 room of this type
+        ReservationRoom existingRoom = new ReservationRoom();
+        existingRoom.setId(UUID.randomUUID());
+        existingRoom.setReservationId(reservationId);
+        existingRoom.setRoomTypeId(roomTypeId);
+        existingRoom.setQuantity(2);
+        existingRoom.setCancelledQuantity(1); // active = 1
+        existingRoom.setStatus(ReservationRoomStatus.PARTIALLY_CANCELLED);
+
+        when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of(existingRoom));
+
+        // Total inventory = 2 rooms
+        when(roomRepository.countByPropertyIdAndRoomTypeIdAndActiveTrueAndStatusNot(
+                propertyId, roomTypeId, RoomStatus.OUT_OF_SERVICE)).thenReturn(2L);
+
+        // Other reservations reserved 0 rooms
+        when(reservationRoomRepository.sumReservedQuantityForOverlappingDatesExcludingReservation(
+                eq(propertyId), eq(roomTypeId), eq(reservation.getCheckInDate()), eq(reservation.getCheckOutDate()), any(), eq(reservationId)))
+                .thenReturn(0L);
+
+        // Available excluding this reservation = 2.
+        // Existing active = 1, requested addition = 2 -> total required = 3 > 2 available!
+        addRequest.setQuantity(2);
+
+        assertThatThrownBy(() -> reservationRoomService.addReservationRoom(addRequest))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Insufficient availability for room type 'Deluxe Room'")
+                .hasMessageContaining("Total required: 3 (existing: 1, requested addition: 2)");
+
+        verify(reservationRoomRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("addReservationRoom correctly handles room type already present when sufficient inventory exists")
+    void addReservationRoom_succeedsWithExistingRoomType_whenSufficientInventory() {
+        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
+
+        // Reservation already has 1 active room of this type
+        ReservationRoom existingRoom = new ReservationRoom();
+        existingRoom.setId(UUID.randomUUID());
+        existingRoom.setReservationId(reservationId);
+        existingRoom.setRoomTypeId(roomTypeId);
+        existingRoom.setQuantity(1);
+        existingRoom.setCancelledQuantity(0);
+        existingRoom.setStatus(ReservationRoomStatus.CONFIRMED);
+
+        when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of(existingRoom));
+
+        // Total inventory = 3 rooms
+        when(roomRepository.countByPropertyIdAndRoomTypeIdAndActiveTrueAndStatusNot(
+                propertyId, roomTypeId, RoomStatus.OUT_OF_SERVICE)).thenReturn(3L);
+
+        // Other reservations have 1 room
+        when(reservationRoomRepository.sumReservedQuantityForOverlappingDatesExcludingReservation(
+                eq(propertyId), eq(roomTypeId), eq(reservation.getCheckInDate()), eq(reservation.getCheckOutDate()), any(), eq(reservationId)))
+                .thenReturn(1L);
+
+        // Available excluding this reservation = 3 - 1 = 2.
+        // Existing active = 1, requested = 1 -> Total required = 2 <= 2 available. Allowed!
+        addRequest.setQuantity(1);
+
+        ReservationRoom roomToSave = new ReservationRoom();
+        roomToSave.setId(UUID.randomUUID());
+        roomToSave.setReservationId(reservationId);
+        roomToSave.setRoomTypeId(roomTypeId);
+        roomToSave.setQuantity(1);
+        roomToSave.setUnitPrice(new BigDecimal("2500.00"));
+        roomToSave.setStatus(ReservationRoomStatus.CONFIRMED);
+
+        when(reservationRoomMapper.toEntity(addRequest)).thenReturn(roomToSave);
+        when(reservationRoomRepository.saveAndFlush(roomToSave)).thenReturn(roomToSave);
+
+        ReservationRoomResponse mockResponse = new ReservationRoomResponse();
+        mockResponse.setId(roomToSave.getId());
+        when(reservationRoomMapper.toResponse(roomToSave)).thenReturn(mockResponse);
+
+        ReservationRoomResponse result = reservationRoomService.addReservationRoom(addRequest);
+
+        assertThat(result).isNotNull();
+        assertThat(result.getId()).isEqualTo(roomToSave.getId());
+        verify(reservationRoomRepository).saveAndFlush(roomToSave);
+    }
+
+    @Test
+    @DisplayName("addReservationRoom ignores CANCELLED ReservationRoom records when calculating existing active quantity")
+    void addReservationRoom_ignoresCancelledReservationRoomRecords_whenCalculatingExistingActiveQuantity() {
+        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
+
+        // CANCELLED reservation-room record with quantity = 2 and cancelledQuantity = 0
+        ReservationRoom cancelledRoom = new ReservationRoom();
+        cancelledRoom.setId(UUID.randomUUID());
+        cancelledRoom.setReservationId(reservationId);
+        cancelledRoom.setRoomTypeId(roomTypeId);
+        cancelledRoom.setQuantity(2);
+        cancelledRoom.setCancelledQuantity(0);
+        cancelledRoom.setStatus(ReservationRoomStatus.CANCELLED);
+
+        when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of(cancelledRoom));
+
+        // Total inventory = 2 rooms
+        when(roomRepository.countByPropertyIdAndRoomTypeIdAndActiveTrueAndStatusNot(
+                propertyId, roomTypeId, RoomStatus.OUT_OF_SERVICE)).thenReturn(2L);
+
+        // Other reservations reserved 0 rooms
+        when(reservationRoomRepository.sumReservedQuantityForOverlappingDatesExcludingReservation(
+                eq(propertyId), eq(roomTypeId), eq(reservation.getCheckInDate()), eq(reservation.getCheckOutDate()), any(), eq(reservationId)))
+                .thenReturn(0L);
+
+        // If cancelled room were counted, existing active = 2, so adding 1 would total 3 > 2 (fail).
+        // Since CANCELLED is ignored, existing active = 0, so adding 1 requires 1 <= 2 (succeeds).
+        addRequest.setQuantity(1);
+
+        ReservationRoom roomToSave = new ReservationRoom();
+        roomToSave.setId(UUID.randomUUID());
+        roomToSave.setReservationId(reservationId);
+        roomToSave.setRoomTypeId(roomTypeId);
+        roomToSave.setQuantity(1);
+        roomToSave.setUnitPrice(new BigDecimal("2500.00"));
+        roomToSave.setStatus(ReservationRoomStatus.CONFIRMED);
+
+        when(reservationRoomMapper.toEntity(addRequest)).thenReturn(roomToSave);
+        when(reservationRoomRepository.saveAndFlush(roomToSave)).thenReturn(roomToSave);
+
+        ReservationRoomResponse mockResponse = new ReservationRoomResponse();
+        mockResponse.setId(roomToSave.getId());
+        when(reservationRoomMapper.toResponse(roomToSave)).thenReturn(mockResponse);
+
+        ReservationRoomResponse result = reservationRoomService.addReservationRoom(addRequest);
+
+        assertThat(result).isNotNull();
+        assertThat(result.getId()).isEqualTo(roomToSave.getId());
+        verify(reservationRoomRepository).saveAndFlush(roomToSave);
+    }
+
+    @Test
     @DisplayName("addReservationRoom succeeds when inventory is available")
     void addReservationRoom_succeedsWhenInventoryAvailable() {
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
         when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
+        when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of());
 
         when(roomRepository.countByPropertyIdAndRoomTypeIdAndActiveTrueAndStatusNot(
                 propertyId, roomTypeId, RoomStatus.OUT_OF_SERVICE)).thenReturn(3L);
-        when(reservationRoomRepository.sumReservedQuantityForOverlappingDates(
-                eq(propertyId), eq(roomTypeId), eq(reservation.getCheckInDate()), eq(reservation.getCheckOutDate()), any()))
+        when(reservationRoomRepository.sumReservedQuantityForOverlappingDatesExcludingReservation(
+                eq(propertyId), eq(roomTypeId), eq(reservation.getCheckInDate()), eq(reservation.getCheckOutDate()), any(), eq(reservationId)))
                 .thenReturn(1L);
 
         ReservationRoom roomToSave = new ReservationRoom();

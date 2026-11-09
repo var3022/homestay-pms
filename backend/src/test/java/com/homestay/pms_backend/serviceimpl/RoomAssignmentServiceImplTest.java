@@ -280,31 +280,119 @@ class RoomAssignmentServiceImplTest {
     }
 
     @Test
-    @DisplayName("releaseRoomAssignment succeeds for PENDING or CONFIRMED reservations before check-in")
-    void releaseRoomAssignment_succeedsForPendingOrConfirmedReservation() {
+    @DisplayName("releaseRoomAssignment rejects release when it would leave insufficient physical room coverage")
+    void releaseRoomAssignment_rejectsWhenItWouldLeaveInsufficientRoomCoverage() {
         UUID assignmentId = UUID.randomUUID();
         RoomAssignment assignment = new RoomAssignment();
         assignment.setId(assignmentId);
         assignment.setReservationRoomId(reservationRoomId);
+        assignment.setRoomId(roomId);
+        assignment.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        assignment.setAssignedUntil(LocalDate.of(2026, 11, 12));
         assignment.setStatus(RoomAssignmentStatus.ASSIGNED);
 
         reservation.setStatus(ReservationStatus.CONFIRMED);
+        reservationRoom.setQuantity(1);
+        reservationRoom.setCancelledQuantity(0);
 
         when(roomAssignmentRepository.findById(assignmentId)).thenReturn(Optional.of(assignment));
         when(reservationRoomRepository.findById(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
-        when(roomAssignmentRepository.saveAndFlush(assignment)).thenReturn(assignment);
+        // Only this single assignment exists; after excluding it, 0 remain (< 1 required)
+        when(roomAssignmentRepository.findByReservationRoomId(reservationRoomId)).thenReturn(List.of(assignment));
+
+        assertThatThrownBy(() -> roomAssignmentService.releaseRoomAssignment(assignmentId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Cannot release room assignment because it would leave insufficient room coverage for date 2026-11-10");
+
+        verify(roomAssignmentRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("releaseRoomAssignment succeeds when another assignment provides sufficient coverage")
+    void releaseRoomAssignment_succeedsWhenAnotherAssignmentProvidesSufficientCoverage() {
+        UUID assignmentId = UUID.randomUUID();
+        RoomAssignment assignment1 = new RoomAssignment();
+        assignment1.setId(assignmentId);
+        assignment1.setReservationRoomId(reservationRoomId);
+        assignment1.setRoomId(roomId);
+        assignment1.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        assignment1.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        assignment1.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        // Replacement assignment providing coverage
+        RoomAssignment assignment2 = new RoomAssignment();
+        assignment2.setId(UUID.randomUUID());
+        assignment2.setReservationRoomId(reservationRoomId);
+        assignment2.setRoomId(UUID.randomUUID());
+        assignment2.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        assignment2.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        assignment2.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        reservation.setStatus(ReservationStatus.CONFIRMED);
+        reservationRoom.setQuantity(1);
+        reservationRoom.setCancelledQuantity(0); // requires 1
+
+        when(roomAssignmentRepository.findById(assignmentId)).thenReturn(Optional.of(assignment1));
+        when(reservationRoomRepository.findById(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
+        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(roomAssignmentRepository.findByReservationRoomId(reservationRoomId)).thenReturn(List.of(assignment1, assignment2));
+        when(roomAssignmentRepository.saveAndFlush(assignment1)).thenReturn(assignment1);
 
         RoomAssignmentResponse mockResponse = new RoomAssignmentResponse();
         mockResponse.setId(assignmentId);
         mockResponse.setStatus(RoomAssignmentStatus.RELEASED);
-        when(roomAssignmentMapper.toResponse(assignment)).thenReturn(mockResponse);
+        when(roomAssignmentMapper.toResponse(assignment1)).thenReturn(mockResponse);
 
         RoomAssignmentResponse response = roomAssignmentService.releaseRoomAssignment(assignmentId);
 
         assertThat(response).isNotNull();
-        assertThat(assignment.getStatus()).isEqualTo(RoomAssignmentStatus.RELEASED);
-        verify(roomAssignmentRepository).saveAndFlush(assignment);
+        assertThat(assignment1.getStatus()).isEqualTo(RoomAssignmentStatus.RELEASED);
+        verify(roomAssignmentRepository).saveAndFlush(assignment1);
+    }
+
+    @Test
+    @DisplayName("releaseRoomAssignment correctly handles partially cancelled ReservationRoom quantity")
+    void releaseRoomAssignment_handlesPartiallyCancelledReservationRoomQuantity() {
+        UUID assignment1Id = UUID.randomUUID();
+        RoomAssignment assignment1 = new RoomAssignment();
+        assignment1.setId(assignment1Id);
+        assignment1.setReservationRoomId(reservationRoomId);
+        assignment1.setRoomId(roomId);
+        assignment1.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        assignment1.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        assignment1.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        RoomAssignment assignment2 = new RoomAssignment();
+        assignment2.setId(UUID.randomUUID());
+        assignment2.setReservationRoomId(reservationRoomId);
+        assignment2.setRoomId(UUID.randomUUID());
+        assignment2.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        assignment2.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        assignment2.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        reservation.setStatus(ReservationStatus.CONFIRMED);
+        // quantity 2, cancelled 1 -> required quantity = 1
+        reservationRoom.setQuantity(2);
+        reservationRoom.setCancelledQuantity(1);
+
+        when(roomAssignmentRepository.findById(assignment1Id)).thenReturn(Optional.of(assignment1));
+        when(reservationRoomRepository.findById(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
+        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(roomAssignmentRepository.findByReservationRoomId(reservationRoomId)).thenReturn(List.of(assignment1, assignment2));
+        when(roomAssignmentRepository.saveAndFlush(assignment1)).thenReturn(assignment1);
+
+        RoomAssignmentResponse mockResponse = new RoomAssignmentResponse();
+        mockResponse.setId(assignment1Id);
+        mockResponse.setStatus(RoomAssignmentStatus.RELEASED);
+        when(roomAssignmentMapper.toResponse(assignment1)).thenReturn(mockResponse);
+
+        // Releasing assignment1 succeeds because assignment2 covers the remaining required quantity 1
+        RoomAssignmentResponse response = roomAssignmentService.releaseRoomAssignment(assignment1Id);
+
+        assertThat(response).isNotNull();
+        assertThat(assignment1.getStatus()).isEqualTo(RoomAssignmentStatus.RELEASED);
+        verify(roomAssignmentRepository).saveAndFlush(assignment1);
     }
 }
 
