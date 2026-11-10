@@ -1,9 +1,9 @@
 package com.homestay.pms_backend;
 
+import com.homestay.pms_backend.test.IsolatedDatabaseTest;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
 
-@SpringBootTest
+@IsolatedDatabaseTest
 class PmsBackendApplicationTests {
 
 	@Test

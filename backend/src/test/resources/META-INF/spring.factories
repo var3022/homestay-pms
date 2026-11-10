@@ -1,0 +1,3 @@
+# Global ApplicationContextInitializer for all Spring Boot test contexts
+org.springframework.context.ApplicationContextInitializer=\
+  com.homestay.pms_backend.test.TestDatabaseSafetyInitializer
