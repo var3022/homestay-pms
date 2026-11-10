@@ -235,6 +235,54 @@ class RolePrivilegeSegregationIntegrationTest {
                 Boolean.class
         );
         assertThat(canDirectUpdatePeriod).isFalse();
+
+        // Critical accounting lock protection: books_locked_until_date cannot be updated directly by pms_finance_admin or pms_app
+        Boolean canFinanceAdminUpdateLockDate = jdbcTemplate.queryForObject(
+                "SELECT has_column_privilege('pms_finance_admin', 'property_financial_settings', 'books_locked_until_date', 'UPDATE')",
+                Boolean.class
+        );
+        Boolean canAppUpdateLockDate = jdbcTemplate.queryForObject(
+                "SELECT has_column_privilege('pms_app', 'property_financial_settings', 'books_locked_until_date', 'UPDATE')",
+                Boolean.class
+        );
+        assertThat(canFinanceAdminUpdateLockDate).isFalse();
+        assertThat(canAppUpdateLockDate).isFalse();
+    }
+
+    @Test
+    @DisplayName("Verify accounting lock date protection: direct UPDATE is blocked and procedures are SECURITY DEFINER owned by pms_admin")
+    void shouldVerifyAccountingLockDateProtectionAndSecurityDefinerOwnership() {
+        // 1. Negative test: verify pms_app cannot execute direct UPDATE on books_locked_until_date
+        assertThatThrownBy(() -> jdbcTemplate.execute(
+                "UPDATE property_financial_settings SET books_locked_until_date = '2020-01-01'"
+        ))
+                .isInstanceOf(DataAccessException.class)
+                .rootCause()
+                .hasMessageContaining("permission denied for table property_financial_settings");
+
+        // 2. Negative test: verify pms_finance_admin is strictly denied UPDATE on books_locked_until_date
+        Boolean finAdminCanUpdateLockDate = jdbcTemplate.queryForObject(
+                "SELECT has_column_privilege('pms_finance_admin', 'property_financial_settings', 'books_locked_until_date', 'UPDATE')",
+                Boolean.class
+        );
+        assertThat(finAdminCanUpdateLockDate)
+                .as("pms_finance_admin must not have column-level UPDATE on books_locked_until_date")
+                .isFalse();
+
+        // 3. Confirm authorized procedures are SECURITY DEFINER and owned by pms_admin
+        Boolean isCloseSecDef = jdbcTemplate.queryForObject(
+                "SELECT p.prosecdef FROM pg_proc p JOIN pg_roles r ON p.proowner = r.oid " +
+                "WHERE p.proname = 'fn_close_accounting_period' AND r.rolname = 'pms_admin'",
+                Boolean.class
+        );
+        Boolean isCutoverSecDef = jdbcTemplate.queryForObject(
+                "SELECT p.prosecdef FROM pg_proc p JOIN pg_roles r ON p.proowner = r.oid " +
+                "WHERE p.proname = 'fn_approve_historical_cutover' AND r.rolname = 'pms_admin'",
+                Boolean.class
+        );
+
+        assertThat(isCloseSecDef).as("fn_close_accounting_period must be SECURITY DEFINER owned by pms_admin").isTrue();
+        assertThat(isCutoverSecDef).as("fn_approve_historical_cutover must be SECURITY DEFINER owned by pms_admin").isTrue();
     }
 
     @Test
