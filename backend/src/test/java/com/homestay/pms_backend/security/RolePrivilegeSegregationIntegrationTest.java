@@ -189,5 +189,73 @@ class RolePrivilegeSegregationIntegrationTest {
                 .rootCause()
                 .hasMessageContaining("permission denied for function fn_approve_historical_cutover");
     }
+
+    @Test
+    @DisplayName("Verify pms_finance_admin least-privilege matrix: authorized for tax/account mutations, forbidden on direct period mutations")
+    void shouldVerifyFinanceAdminPrivilegesOnFinancialSettingsAndAccounts() {
+        // Tax configuration and operational settings: column-level UPDATE granted to pms_finance_admin
+        Boolean canUpdateTax = jdbcTemplate.queryForObject(
+                "SELECT has_column_privilege('pms_finance_admin', 'property_financial_settings', 'is_tax_enabled', 'UPDATE')",
+                Boolean.class
+        );
+        Boolean canUpdateTaxId = jdbcTemplate.queryForObject(
+                "SELECT has_column_privilege('pms_finance_admin', 'property_financial_settings', 'tax_id_number', 'UPDATE')",
+                Boolean.class
+        );
+        Boolean canUpdateBaseCurrency = jdbcTemplate.queryForObject(
+                "SELECT has_column_privilege('pms_finance_admin', 'property_financial_settings', 'base_currency', 'UPDATE')",
+                Boolean.class
+        );
+
+        assertThat(canUpdateTax).isTrue();
+        assertThat(canUpdateTaxId).isTrue();
+        assertThat(canUpdateBaseCurrency).isFalse();
+
+        // Chart of accounts management: INSERT and controlled UPDATE granted to pms_finance_admin
+        Boolean canInsertAccount = jdbcTemplate.queryForObject(
+                "SELECT has_table_privilege('pms_finance_admin', 'finance_accounts', 'INSERT')",
+                Boolean.class
+        );
+        Boolean canUpdateAccountName = jdbcTemplate.queryForObject(
+                "SELECT has_column_privilege('pms_finance_admin', 'finance_accounts', 'account_name', 'UPDATE')",
+                Boolean.class
+        );
+        Boolean canUpdateAccountCode = jdbcTemplate.queryForObject(
+                "SELECT has_column_privilege('pms_finance_admin', 'finance_accounts', 'account_code', 'UPDATE')",
+                Boolean.class
+        );
+
+        assertThat(canInsertAccount).isTrue();
+        assertThat(canUpdateAccountName).isTrue();
+        assertThat(canUpdateAccountCode).isFalse();
+
+        // Direct UPDATE on accounting periods revoked from pms_finance_admin (closure only through fn_close_accounting_period)
+        Boolean canDirectUpdatePeriod = jdbcTemplate.queryForObject(
+                "SELECT has_table_privilege('pms_finance_admin', 'finance_accounting_periods', 'UPDATE')",
+                Boolean.class
+        );
+        assertThat(canDirectUpdatePeriod).isFalse();
+    }
+
+    @Test
+    @DisplayName("Verify pms_finance_admin has EXECUTE permissions on all administrative procedures")
+    void shouldVerifyFinanceAdminHasExecutionRightsOnAdminProcedures() {
+        Boolean canClose = jdbcTemplate.queryForObject(
+                "SELECT has_function_privilege('pms_finance_admin', 'fn_close_accounting_period(uuid, character varying)', 'EXECUTE')",
+                Boolean.class
+        );
+        Boolean canInit = jdbcTemplate.queryForObject(
+                "SELECT has_function_privilege('pms_finance_admin', 'fn_initialize_property_finances(uuid, character varying, smallint, date)', 'EXECUTE')",
+                Boolean.class
+        );
+        Boolean canCutover = jdbcTemplate.queryForObject(
+                "SELECT has_function_privilege('pms_finance_admin', 'fn_approve_historical_cutover(uuid, uuid, character varying)', 'EXECUTE')",
+                Boolean.class
+        );
+
+        assertThat(canClose).isTrue();
+        assertThat(canInit).isTrue();
+        assertThat(canCutover).isTrue();
+    }
 }
 
