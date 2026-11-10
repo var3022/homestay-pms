@@ -27,3 +27,4 @@ import java.lang.annotation.Target;
 @ContextConfiguration(initializers = TestDatabaseSafetyInitializer.class)
 public @interface IsolatedDatabaseTest {
 }
+
