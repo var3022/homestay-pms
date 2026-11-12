@@ -75,6 +75,7 @@ class StaffAuthDatabaseFoundationIntegrationTest {
         Flyway flyway = Flyway.configure()
                 .dataSource(CLEAN_VALIDATION_DB_URL, ADMIN_USER, ADMIN_PASS)
                 .locations("classpath:db/migration")
+                .target("8")
                 .cleanDisabled(false)
                 .load();
 
@@ -87,9 +88,9 @@ class StaffAuthDatabaseFoundationIntegrationTest {
         assertThat(current.getVersion().getVersion()).isEqualTo("8");
         assertThat(current.getDescription()).isEqualTo("create staff auth and rbac schema");
 
-        MigrationInfo[] all = flyway.info().all();
-        assertThat(all).hasSize(8);
-        for (MigrationInfo info : all) {
+        MigrationInfo[] applied = flyway.info().applied();
+        assertThat(applied).hasSize(8);
+        for (MigrationInfo info : applied) {
             assertThat(info.getState().isApplied())
                     .as("Migration V%s must be successfully applied", info.getVersion().getVersion())
                     .isTrue();
@@ -133,10 +134,11 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     @Test
     @DisplayName("Migration must NOT automatically create any staff accounts or assigned global roles")
     void shouldVerifyNoAutomaticStaffAccountsCreated() {
+        JdbcTemplate adminJdbc = createAdminJdbcTemplate();
         Integer userCount = jdbcTemplate.queryForObject("SELECT count(*) FROM staff_users", Integer.class);
         Integer propRoleCount = jdbcTemplate.queryForObject("SELECT count(*) FROM staff_property_roles", Integer.class);
         Integer globalRoleCount = jdbcTemplate.queryForObject("SELECT count(*) FROM staff_global_roles", Integer.class);
-        Integer tokenCount = jdbcTemplate.queryForObject("SELECT count(*) FROM staff_refresh_tokens", Integer.class);
+        Integer tokenCount = adminJdbc.queryForObject("SELECT count(*) FROM staff_refresh_tokens", Integer.class);
 
         assertThat(userCount).isZero();
         assertThat(propRoleCount).isZero();
@@ -1196,42 +1198,53 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     // =========================================================================
 
     @Test
-    @Transactional
     @DisplayName("Insertion of valid 64-char SHA-256 hashed refresh token with rotation family succeeds")
     void shouldInsertValidRefreshToken() {
-        UUID userId = createTestUser("token_user@homestay.com");
-        UUID familyId = UUID.randomUUID();
-        String tokenHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; // 64 chars
+        JdbcTemplate adminJdbc = createAdminJdbcTemplate();
+        UUID userId = null;
+        try {
+            userId = createAdminTestUser(adminJdbc, "token_user_" + UUID.randomUUID() + "@homestay.com");
+            UUID familyId = UUID.randomUUID();
+            String tokenHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; // 64 chars
 
-        jdbcTemplate.update(
-                "INSERT INTO staff_refresh_tokens (staff_user_id, token_hash, token_family, sequence_number, expires_at) " +
-                "VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP + INTERVAL '7 days')",
-                userId, tokenHash, familyId
-        );
+            adminJdbc.update(
+                    "INSERT INTO staff_refresh_tokens (staff_user_id, token_hash, token_family, sequence_number, expires_at) " +
+                    "VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP + INTERVAL '7 days')",
+                    userId, tokenHash, familyId
+            );
 
-        Integer count = jdbcTemplate.queryForObject(
-                "SELECT count(*) FROM staff_refresh_tokens WHERE token_hash = ?",
-                Integer.class,
-                tokenHash
-        );
-        assertThat(count).isEqualTo(1);
+            Integer count = adminJdbc.queryForObject(
+                    "SELECT count(*) FROM staff_refresh_tokens WHERE token_hash = ?",
+                    Integer.class,
+                    tokenHash
+            );
+            assertThat(count).isEqualTo(1);
+        } finally {
+            cleanUpAdminUser(adminJdbc, userId);
+        }
     }
 
     @Test
-    @Transactional
     @DisplayName("Rejects refresh token with invalid hash length (!= 64 characters)")
     void shouldRejectInvalidTokenHashLength() {
-        UUID userId = createTestUser("short_token@homestay.com");
-        UUID familyId = UUID.randomUUID();
+        JdbcTemplate adminJdbc = createAdminJdbcTemplate();
+        UUID userId = null;
+        try {
+            userId = createAdminTestUser(adminJdbc, "short_token_" + UUID.randomUUID() + "@homestay.com");
+            UUID familyId = UUID.randomUUID();
+            final UUID finalUserId = userId;
 
-        assertThatThrownBy(() -> jdbcTemplate.update(
-                "INSERT INTO staff_refresh_tokens (staff_user_id, token_hash, token_family, expires_at) " +
-                "VALUES (?, 'short_hash_only_32_characters_here', ?, CURRENT_TIMESTAMP + INTERVAL '7 days')",
-                userId, familyId
-        ))
-                .isInstanceOf(DataAccessException.class)
-                .rootCause()
-                .hasMessageContaining("chk_staff_refresh_tokens_hash_len");
+            assertThatThrownBy(() -> adminJdbc.update(
+                    "INSERT INTO staff_refresh_tokens (staff_user_id, token_hash, token_family, expires_at) " +
+                    "VALUES (?, 'short_hash_only_32_characters_here', ?, CURRENT_TIMESTAMP + INTERVAL '7 days')",
+                    finalUserId, familyId
+            ))
+                    .isInstanceOf(DataAccessException.class)
+                    .rootCause()
+                    .hasMessageContaining("chk_staff_refresh_tokens_hash_len");
+        } finally {
+            cleanUpAdminUser(adminJdbc, userId);
+        }
     }
 
     // =========================================================================
@@ -1465,6 +1478,22 @@ class StaffAuthDatabaseFoundationIntegrationTest {
                 "SELECT has_table_privilege('pms_app', 'staff_global_roles', 'INSERT')",
                 Boolean.class
         );
+        Boolean canSelectTokens = jdbcTemplate.queryForObject(
+                "SELECT has_table_privilege('pms_app', 'staff_refresh_tokens', 'SELECT')",
+                Boolean.class
+        );
+        Boolean canInsertTokens = jdbcTemplate.queryForObject(
+                "SELECT has_table_privilege('pms_app', 'staff_refresh_tokens', 'INSERT')",
+                Boolean.class
+        );
+        Boolean canUpdateTokens = jdbcTemplate.queryForObject(
+                "SELECT has_table_privilege('pms_app', 'staff_refresh_tokens', 'UPDATE')",
+                Boolean.class
+        );
+        Boolean canDeleteTokens = jdbcTemplate.queryForObject(
+                "SELECT has_table_privilege('pms_app', 'staff_refresh_tokens', 'DELETE')",
+                Boolean.class
+        );
         Boolean canRecordLogin = jdbcTemplate.queryForObject(
                 "SELECT has_function_privilege('pms_app', 'fn_record_staff_login_attempt(VARCHAR, BOOLEAN, VARCHAR, VARCHAR)', 'EXECUTE')",
                 Boolean.class
@@ -1482,6 +1511,10 @@ class StaffAuthDatabaseFoundationIntegrationTest {
         assertThat(canUpdatePropRoles).isFalse();
         assertThat(canDeletePropRoles).isFalse();
         assertThat(canInsertGlobalRoles).isFalse();
+        assertThat(canSelectTokens).isFalse();
+        assertThat(canInsertTokens).isFalse();
+        assertThat(canUpdateTokens).isFalse();
+        assertThat(canDeleteTokens).isFalse();
         assertThat(canRecordLogin).isTrue();
     }
 }
