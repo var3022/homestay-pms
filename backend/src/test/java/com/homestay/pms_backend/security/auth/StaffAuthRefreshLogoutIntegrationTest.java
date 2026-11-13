@@ -724,7 +724,7 @@ class StaffAuthRefreshLogoutIntegrationTest {
     }
 
     @Test
-    @DisplayName("Requirement 26: Existing login endpoint remains unchanged and operational")
+    @DisplayName("Requirement 26: Login endpoint is operational with Origin validation and issues refresh cookie")
     void shouldVerifyLoginEndpointRemainsOperational() throws Exception {
         UUID staffId = createStaffUser("trent", true, false, null);
 
@@ -737,9 +737,12 @@ class StaffAuthRefreshLogoutIntegrationTest {
 
         mockMvc.perform(post(LOGIN_ENDPOINT)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(loginPayload))
+                        .content(loginPayload)
+                        .header("Origin", ALLOWED_ORIGIN))
                 .andExpect(status().isOk())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(header().string(HttpHeaders.PRAGMA, "no-cache"))
+                .andExpect(header().string(HttpHeaders.SET_COOKIE, containsString(cookieProperties.getCookieName() + "=")))
                 .andExpect(jsonPath("$.accessToken").isNotEmpty())
                 .andExpect(jsonPath("$.tokenType").value("access"))
                 .andExpect(jsonPath("$.staff.id").value(staffId.toString()))

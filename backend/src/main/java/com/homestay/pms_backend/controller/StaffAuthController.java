@@ -17,6 +17,7 @@ import com.homestay.pms_backend.security.jwt.AccessTokenDto;
 import com.homestay.pms_backend.security.jwt.AccessTokenService;
 import com.homestay.pms_backend.security.refreshtoken.AuthCookieManager;
 import com.homestay.pms_backend.security.refreshtoken.InvalidRefreshTokenException;
+import com.homestay.pms_backend.security.refreshtoken.IssuedRefreshToken;
 import com.homestay.pms_backend.security.refreshtoken.RefreshTokenService;
 import com.homestay.pms_backend.security.refreshtoken.RotatedRefreshToken;
 import jakarta.servlet.http.HttpServletRequest;
@@ -100,11 +101,13 @@ public class StaffAuthController {
     }
 
     /**
-     * Authenticates staff credentials, asserts database state, and issues a signed JWT access token.
+     * Authenticates staff credentials, asserts database state, issues an initial refresh token
+     * stored securely in an HttpOnly cookie, and issues a signed JWT access token in the response body.
      *
      * @param request     Validated login request containing email and raw password
-     * @param httpRequest Underlying servlet request for extracting safe IP and User-Agent
-     * @return HTTP 200 with JWT access token, expiration, and minimal staff details; or HTTP 401 on failure
+     * @param httpRequest Underlying servlet request for origin validation and extracting safe IP and User-Agent
+     * @return HTTP 200 with JWT access token, expiration, minimal staff details, and HttpOnly refresh cookie;
+     *         or HTTP 401 on authentication failure, HTTP 403 on origin failure
      */
     @PostMapping(
             value = "/login",
@@ -115,10 +118,17 @@ public class StaffAuthController {
             @Valid @RequestBody StaffLoginRequest request,
             HttpServletRequest httpRequest
     ) {
-        // 1. Extract safe client context
+        if (refreshTokenService == null || cookieManager == null || originValidator == null) {
+            throw new IllegalStateException("Authentication login subsystem is not fully configured");
+        }
+
+        // 1. Strict Origin / CSRF validation before credential authentication or session issuance
+        originValidator.validate(httpRequest);
+
+        // 2. Extract safe client context
         ClientContext context = clientContextExtractor.extract(httpRequest);
 
-        // 2. Call StaffAuthenticationService to verify credentials & record database audit
+        // 3. Call StaffAuthenticationService to verify credentials & record database audit
         AuthenticatedStaff staff = staffAuthenticationService.authenticate(
                 request.email(),
                 request.password(),
@@ -126,10 +136,42 @@ public class StaffAuthController {
                 context.userAgent()
         );
 
-        // 3. Call AccessTokenService to issue a signed JWT access token
-        AccessTokenDto tokenDto = accessTokenService.generateAccessToken(staff);
+        // 4. Issue initial refresh token for the authenticated staff identity
+        IssuedRefreshToken issuedToken = refreshTokenService.issueInitialToken(
+                staff.id(),
+                context.ipAddress(),
+                context.userAgent()
+        );
 
-        // 4. Compute remaining TTL in seconds and assemble safe response DTO
+        // 5. Generate signed JWT access token (revoke session family if generation fails)
+        AccessTokenDto tokenDto;
+        try {
+            tokenDto = accessTokenService.generateAccessToken(staff);
+        } catch (Exception e) {
+            log.error("JWT access token generation failed after initial refresh token issuance; revoking session family: {}", e.getMessage());
+            try {
+                refreshTokenService.revokeSession(issuedToken.rawToken(), staff.id(), "system:auth");
+            } catch (Exception revokeEx) {
+                log.error("Failed to revoke session family after JWT generation failure: {}", revokeEx.getMessage());
+            }
+            throw e;
+        }
+
+        // 6. Assemble HttpOnly refresh cookie (revoke session family if cookie creation fails)
+        ResponseCookie refreshCookie;
+        try {
+            refreshCookie = cookieManager.createRefreshCookie(issuedToken.rawToken());
+        } catch (Exception e) {
+            log.error("Refresh cookie creation failed after initial refresh token issuance; revoking session family: {}", e.getMessage());
+            try {
+                refreshTokenService.revokeSession(issuedToken.rawToken(), staff.id(), "system:auth");
+            } catch (Exception revokeEx) {
+                log.error("Failed to revoke session family after cookie creation failure: {}", revokeEx.getMessage());
+            }
+            throw e;
+        }
+
+        // 7. Compute remaining TTL in seconds and assemble safe response DTO
         long expiresInSeconds = Math.max(0, Duration.between(Instant.now(), tokenDto.expiresAt()).toSeconds());
         StaffLoginResponse response = new StaffLoginResponse(
                 tokenDto.token(),
@@ -143,8 +185,9 @@ public class StaffAuthController {
                 )
         );
 
-        // 5. Return HTTP 200 with mandatory non-cacheable headers
+        // 8. Return HTTP 200 with refresh cookie and mandatory non-cacheable headers
         return ResponseEntity.ok()
+                .header(HttpHeaders.SET_COOKIE, refreshCookie.toString())
                 .header(HttpHeaders.CACHE_CONTROL, "no-store")
                 .header(HttpHeaders.PRAGMA, "no-cache")
                 .body(response);

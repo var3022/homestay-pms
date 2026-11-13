@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.homestay.pms_backend.dto.request.StaffLoginRequest;
 import com.homestay.pms_backend.dto.response.StaffLoginResponse;
 import com.homestay.pms_backend.exception.GlobalExceptionHandler;
+import com.homestay.pms_backend.exception.OriginValidationException;
 import com.homestay.pms_backend.security.AuthenticatedStaff;
 import com.homestay.pms_backend.security.StaffAuthenticationException;
 import com.homestay.pms_backend.security.StaffAuthenticationService;
@@ -14,6 +15,7 @@ import com.homestay.pms_backend.security.auth.OriginValidator;
 import com.homestay.pms_backend.security.jwt.AccessTokenDto;
 import com.homestay.pms_backend.security.jwt.AccessTokenService;
 import com.homestay.pms_backend.security.refreshtoken.AuthCookieManager;
+import com.homestay.pms_backend.security.refreshtoken.IssuedRefreshToken;
 import com.homestay.pms_backend.security.refreshtoken.RefreshTokenService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -24,14 +26,19 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseCookie;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.time.Instant;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -91,31 +98,47 @@ class StaffAuthControllerUnitTest {
     }
 
     @Test
-    @DisplayName("Unit: Successful orchestration calls auth service then token service and returns 200")
+    @DisplayName("Unit: Successful orchestration calls auth service, issues refresh token, issues JWT, sets cookie, and returns 200")
     void shouldOrchestrateSuccessfulLogin() throws Exception {
         UUID staffId = UUID.randomUUID();
+        UUID familyId = UUID.randomUUID();
+        String rawRefreshToken = "mock-raw-refresh-token-43-chars-example-string";
         AuthenticatedStaff staff = new AuthenticatedStaff(staffId, "alice@example.com", "Alice", "Admin", "+919876543210");
         AccessTokenDto tokenDto = new AccessTokenDto("mock.jwt.token", Instant.now().plusSeconds(900), "mock-jti", "access");
+        IssuedRefreshToken issuedToken = new IssuedRefreshToken(
+                rawRefreshToken, UUID.randomUUID(), familyId, 1, Instant.now().plusSeconds(604800), staffId
+        );
+        ResponseCookie refreshCookie = ResponseCookie.from("__Host-pms-refresh", rawRefreshToken)
+                .httpOnly(true).secure(true).path("/").sameSite("Strict").maxAge(java.time.Duration.ofDays(7)).build();
 
         when(clientContextExtractor.extract(any())).thenReturn(new ClientContext("192.168.1.100", "Mozilla/5.0 UnitTester"));
         when(staffAuthenticationService.authenticate(eq("alice@example.com"), eq("SecretPassword#1"), eq("192.168.1.100"), eq("Mozilla/5.0 UnitTester")))
                 .thenReturn(staff);
+        when(refreshTokenService.issueInitialToken(eq(staffId), eq("192.168.1.100"), eq("Mozilla/5.0 UnitTester")))
+                .thenReturn(issuedToken);
         when(accessTokenService.generateAccessToken(staff)).thenReturn(tokenDto);
+        when(cookieManager.createRefreshCookie(rawRefreshToken)).thenReturn(refreshCookie);
 
         StaffLoginRequest request = new StaffLoginRequest("alice@example.com", "SecretPassword#1");
 
         mockMvc.perform(post(LOGIN_URL)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
+                        .content(objectMapper.writeValueAsString(request))
+                        .header("Origin", "http://localhost:3000"))
                 .andExpect(status().isOk())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(header().string(HttpHeaders.PRAGMA, "no-cache"))
+                .andExpect(header().string(HttpHeaders.SET_COOKIE, org.hamcrest.Matchers.containsString("__Host-pms-refresh=" + rawRefreshToken)))
                 .andExpect(jsonPath("$.accessToken").value("mock.jwt.token"))
                 .andExpect(jsonPath("$.tokenType").value("access"))
                 .andExpect(jsonPath("$.staff.id").value(staffId.toString()))
                 .andExpect(jsonPath("$.staff.email").value("alice@example.com"));
 
+        verify(originValidator).validate(any());
         verify(staffAuthenticationService).authenticate("alice@example.com", "SecretPassword#1", "192.168.1.100", "Mozilla/5.0 UnitTester");
+        verify(refreshTokenService).issueInitialToken(staffId, "192.168.1.100", "Mozilla/5.0 UnitTester");
         verify(accessTokenService).generateAccessToken(staff);
+        verify(cookieManager).createRefreshCookie(rawRefreshToken);
     }
 
     @Test
@@ -129,12 +152,15 @@ class StaffAuthControllerUnitTest {
 
         mockMvc.perform(post(LOGIN_URL)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
+                        .content(objectMapper.writeValueAsString(request))
+                        .header("Origin", "http://localhost:3000"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$.status").value(401))
                 .andExpect(jsonPath("$.message").value("Invalid email or password."));
 
+        verify(originValidator).validate(any());
+        verifyNoInteractions(refreshTokenService);
         verifyNoInteractions(accessTokenService);
     }
 
@@ -149,14 +175,156 @@ class StaffAuthControllerUnitTest {
 
         mockMvc.perform(post(LOGIN_URL)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
+                        .content(objectMapper.writeValueAsString(request))
+                        .header("Origin", "http://localhost:3000"))
                 .andExpect(status().isInternalServerError())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$.status").value(500))
                 .andExpect(jsonPath("$.message").value("An internal database error occurred. Please try again later."))
                 .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("database connection closed"))));
 
+        verify(originValidator).validate(any());
+        verifyNoInteractions(refreshTokenService);
         verifyNoInteractions(accessTokenService);
+    }
+
+    @Test
+    @DisplayName("Unit: Untrusted Origin on login is rejected with 403 Forbidden before authentication")
+    void shouldRejectLoginOnUntrustedOrigin() throws Exception {
+        doThrow(new OriginValidationException("Origin not allowed: https://evil.com"))
+                .when(originValidator).validate(any());
+
+        StaffLoginRequest request = new StaffLoginRequest("alice@example.com", "SecretPassword#1");
+
+        mockMvc.perform(post(LOGIN_URL)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request))
+                        .header("Origin", "https://evil.com"))
+                .andExpect(status().isForbidden())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(jsonPath("$.status").value(403))
+                .andExpect(jsonPath("$.message").value("Cross-origin request rejected"));
+
+        verify(originValidator).validate(any());
+        verifyNoInteractions(staffAuthenticationService);
+        verifyNoInteractions(refreshTokenService);
+        verifyNoInteractions(accessTokenService);
+    }
+
+    @Test
+    @DisplayName("Unit: JWT generation failure after refresh token issuance revokes session family")
+    void shouldRevokeSessionFamilyWhenJwtGenerationFailsOnLogin() throws Exception {
+        UUID staffId = UUID.randomUUID();
+        UUID familyId = UUID.randomUUID();
+        String rawRefreshToken = "mock-raw-refresh-token-jwt-failure";
+        AuthenticatedStaff staff = new AuthenticatedStaff(staffId, "alice@example.com", "Alice", "Admin", "+919876543210");
+        IssuedRefreshToken issuedToken = new IssuedRefreshToken(
+                rawRefreshToken, UUID.randomUUID(), familyId, 1, Instant.now().plusSeconds(604800), staffId
+        );
+
+        when(clientContextExtractor.extract(any())).thenReturn(new ClientContext("192.168.1.100", "Mozilla/5.0 UnitTester"));
+        when(staffAuthenticationService.authenticate(eq("alice@example.com"), eq("SecretPassword#1"), eq("192.168.1.100"), eq("Mozilla/5.0 UnitTester")))
+                .thenReturn(staff);
+        when(refreshTokenService.issueInitialToken(eq(staffId), eq("192.168.1.100"), eq("Mozilla/5.0 UnitTester")))
+                .thenReturn(issuedToken);
+        when(accessTokenService.generateAccessToken(staff)).thenThrow(new RuntimeException("Signing key unavailable"));
+
+        StaffLoginRequest request = new StaffLoginRequest("alice@example.com", "SecretPassword#1");
+
+        assertThatThrownBy(() -> mockMvc.perform(post(LOGIN_URL)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request))
+                        .header("Origin", "http://localhost:3000")))
+                .hasCauseInstanceOf(RuntimeException.class);
+
+        verify(refreshTokenService).revokeSession(rawRefreshToken, staffId, "system:auth");
+        verify(cookieManager, never()).createRefreshCookie(any());
+    }
+
+    @Test
+    @DisplayName("Unit: Cookie creation failure after refresh token issuance revokes session family")
+    void shouldRevokeSessionFamilyWhenCookieCreationFailsOnLogin() throws Exception {
+        UUID staffId = UUID.randomUUID();
+        UUID familyId = UUID.randomUUID();
+        String rawRefreshToken = "mock-raw-refresh-token-cookie-failure";
+        AuthenticatedStaff staff = new AuthenticatedStaff(staffId, "alice@example.com", "Alice", "Admin", "+919876543210");
+        AccessTokenDto tokenDto = new AccessTokenDto("mock.jwt.token", Instant.now().plusSeconds(900), "mock-jti", "access");
+        IssuedRefreshToken issuedToken = new IssuedRefreshToken(
+                rawRefreshToken, UUID.randomUUID(), familyId, 1, Instant.now().plusSeconds(604800), staffId
+        );
+
+        when(clientContextExtractor.extract(any())).thenReturn(new ClientContext("192.168.1.100", "Mozilla/5.0 UnitTester"));
+        when(staffAuthenticationService.authenticate(eq("alice@example.com"), eq("SecretPassword#1"), eq("192.168.1.100"), eq("Mozilla/5.0 UnitTester")))
+                .thenReturn(staff);
+        when(refreshTokenService.issueInitialToken(eq(staffId), eq("192.168.1.100"), eq("Mozilla/5.0 UnitTester")))
+                .thenReturn(issuedToken);
+        when(accessTokenService.generateAccessToken(staff)).thenReturn(tokenDto);
+        when(cookieManager.createRefreshCookie(rawRefreshToken)).thenThrow(new IllegalStateException("Insecure cookie failure"));
+
+        StaffLoginRequest request = new StaffLoginRequest("alice@example.com", "SecretPassword#1");
+
+        assertThatThrownBy(() -> mockMvc.perform(post(LOGIN_URL)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request))
+                        .header("Origin", "http://localhost:3000")))
+                .hasCauseInstanceOf(IllegalStateException.class);
+
+        verify(refreshTokenService).revokeSession(rawRefreshToken, staffId, "system:auth");
+    }
+
+    @Test
+    @DisplayName("Unit: If compensating revocation itself fails, the request still fails closed without exposing secrets")
+    void shouldFailClosedWhenCompensatingRevocationThrowsExceptionOnLogin() throws Exception {
+        UUID staffId = UUID.randomUUID();
+        UUID familyId = UUID.randomUUID();
+        String rawRefreshToken = "mock-raw-refresh-token-double-failure";
+        AuthenticatedStaff staff = new AuthenticatedStaff(staffId, "alice@example.com", "Alice", "Admin", "+919876543210");
+        IssuedRefreshToken issuedToken = new IssuedRefreshToken(
+                rawRefreshToken, UUID.randomUUID(), familyId, 1, Instant.now().plusSeconds(604800), staffId
+        );
+
+        when(clientContextExtractor.extract(any())).thenReturn(new ClientContext("192.168.1.100", "Mozilla/5.0 UnitTester"));
+        when(staffAuthenticationService.authenticate(eq("alice@example.com"), eq("SecretPassword#1"), eq("192.168.1.100"), eq("Mozilla/5.0 UnitTester")))
+                .thenReturn(staff);
+        when(refreshTokenService.issueInitialToken(eq(staffId), eq("192.168.1.100"), eq("Mozilla/5.0 UnitTester")))
+                .thenReturn(issuedToken);
+        when(accessTokenService.generateAccessToken(staff)).thenThrow(new RuntimeException("Primary JWT failure"));
+        org.mockito.Mockito.doThrow(new RuntimeException("Database error during revocation"))
+                .when(refreshTokenService).revokeSession(any(), any(), any());
+
+        StaffLoginRequest request = new StaffLoginRequest("alice@example.com", "SecretPassword#1");
+
+        assertThatThrownBy(() -> mockMvc.perform(post(LOGIN_URL)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request))
+                        .header("Origin", "http://localhost:3000")))
+                .hasCauseInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Primary JWT failure");
+
+        verify(refreshTokenService).revokeSession(rawRefreshToken, staffId, "system:auth");
+        verify(cookieManager, never()).createRefreshCookie(any());
+    }
+
+    @Test
+    @DisplayName("Unit: Subsystem dependencies missing causes safe fail-closed IllegalStateException")
+    void shouldFailSafelyWhenSubsystemDependenciesMissing() {
+        StaffAuthController incompleteController = new StaffAuthController(
+                staffAuthenticationService,
+                accessTokenService,
+                clientContextExtractor,
+                null,
+                null,
+                null,
+                null,
+                null
+        );
+
+        StaffLoginRequest request = new StaffLoginRequest("alice@example.com", "SecretPassword#1");
+        MockHttpServletRequest httpRequest = new MockHttpServletRequest();
+
+        assertThatThrownBy(() -> incompleteController.login(request, httpRequest))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Authentication login subsystem is not fully configured");
     }
 
     @Test

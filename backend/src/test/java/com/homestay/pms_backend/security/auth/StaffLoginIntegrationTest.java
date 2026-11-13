@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -43,6 +44,7 @@ class StaffLoginIntegrationTest {
     private static final String LOGIN_ENDPOINT = "/api/v1/auth/login";
     private static final String TEST_DOMAIN = "@test-login.com";
     private static final String DEFAULT_PASSWORD = "StrongSecurePassword#2026!";
+    private static final String ALLOWED_ORIGIN = "http://localhost:3000";
 
     @Autowired
     private WebApplicationContext webApplicationContext;
@@ -95,6 +97,7 @@ class StaffLoginIntegrationTest {
             adminJdbcTemplate.execute(
                     "ALTER TABLE staff_security_audit_events DISABLE TRIGGER trg_staff_security_audit_events_immutable; " +
                     "DELETE FROM staff_security_audit_events WHERE email LIKE '%" + TEST_DOMAIN + "'; " +
+                    "DELETE FROM staff_refresh_tokens WHERE staff_user_id IN (SELECT id FROM staff_users WHERE email LIKE '%" + TEST_DOMAIN + "'); " +
                     "DELETE FROM staff_users WHERE email LIKE '%" + TEST_DOMAIN + "'; " +
                     "ALTER TABLE staff_security_audit_events ENABLE TRIGGER trg_staff_security_audit_events_immutable;"
             );
@@ -123,11 +126,11 @@ class StaffLoginIntegrationTest {
     }
 
     // =========================================================================
-    // 1. Successful Authentication & JWT Token Issuance
+    // 1. Successful Authentication & JWT Token Issuance with Refresh Session
     // =========================================================================
 
     @Test
-    @DisplayName("Success: Valid credentials return HTTP 200 with signed 15-minute JWT and no-store headers")
+    @DisplayName("Success: Valid credentials return HTTP 200 with signed 15-minute JWT, refresh cookie, and no-store headers")
     void shouldLoginSuccessfullyWithValidCredentials() throws Exception {
         String email = "alice" + TEST_DOMAIN;
         UUID staffId = createTestStaff(email, true, false, null);
@@ -137,10 +140,12 @@ class StaffLoginIntegrationTest {
         MvcResult result = mockMvc.perform(post(LOGIN_ENDPOINT)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request))
+                        .header("Origin", ALLOWED_ORIGIN)
                         .header("User-Agent", "Mozilla/5.0 StaffTestClient"))
                 .andExpect(status().isOk())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(header().string(HttpHeaders.PRAGMA, "no-cache"))
+                .andExpect(header().string(HttpHeaders.SET_COOKIE, containsString("pms-refresh")))
                 .andExpect(jsonPath("$.tokenType").value("access"))
                 .andExpect(jsonPath("$.expiresInSeconds").isNumber())
                 .andExpect(jsonPath("$.staff.id").value(staffId.toString()))
@@ -193,6 +198,15 @@ class StaffLoginIntegrationTest {
         assertThat(payloadNode.has("authorities")).isFalse();
         assertThat(payloadNode.has("scope")).isFalse();
 
+        // 5. Verify refresh token session created in database with sequence_number=1
+        List<Map<String, Object>> sessions = adminJdbcTemplate.queryForList(
+                "SELECT sequence_number, is_revoked, expires_at FROM staff_refresh_tokens WHERE staff_user_id = ?",
+                staffId
+        );
+        assertThat(sessions).hasSize(1);
+        assertThat(sessions.get(0).get("sequence_number")).isEqualTo(1);
+        assertThat(sessions.get(0).get("is_revoked")).isEqualTo(false);
+
         // Verify database audit log: Exactly one LOGIN_SUCCESS event recorded
         List<Map<String, Object>> auditEvents = adminJdbcTemplate.queryForList(
                 "SELECT event_type, email, staff_user_id, user_agent FROM staff_security_audit_events WHERE email = ?",
@@ -218,7 +232,8 @@ class StaffLoginIntegrationTest {
 
         mockMvc.perform(post(LOGIN_ENDPOINT)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
+                        .content(objectMapper.writeValueAsString(request))
+                        .header("Origin", ALLOWED_ORIGIN))
                 .andExpect(status().isUnauthorized())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$.status").value(401))
@@ -241,6 +256,14 @@ class StaffLoginIntegrationTest {
                 staffId
         );
         assertThat(failedAttempts).isEqualTo(1);
+
+        // Verify no refresh token session created
+        Integer sessionCount = adminJdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM staff_refresh_tokens WHERE staff_user_id = ?",
+                Integer.class,
+                staffId
+        );
+        assertThat(sessionCount).isEqualTo(0);
     }
 
     @Test
@@ -251,7 +274,8 @@ class StaffLoginIntegrationTest {
 
         mockMvc.perform(post(LOGIN_ENDPOINT)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
+                        .content(objectMapper.writeValueAsString(request))
+                        .header("Origin", ALLOWED_ORIGIN))
                 .andExpect(status().isUnauthorized())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$.status").value(401))
@@ -272,13 +296,14 @@ class StaffLoginIntegrationTest {
     @DisplayName("Account State: Inactive staff returns identical HTTP 401 generic message")
     void shouldRejectInactiveStaffWithGeneric401() throws Exception {
         String email = "inactive" + TEST_DOMAIN;
-        createTestStaff(email, false, false, null); // Deactivated
+        UUID staffId = createTestStaff(email, false, false, null); // Deactivated
 
         StaffLoginRequest request = new StaffLoginRequest(email, DEFAULT_PASSWORD);
 
         MvcResult mvcResult = mockMvc.perform(post(LOGIN_ENDPOINT)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
+                        .content(objectMapper.writeValueAsString(request))
+                        .header("Origin", ALLOWED_ORIGIN))
                 .andExpect(status().isUnauthorized())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$.message").value("Invalid email or password."))
@@ -287,19 +312,28 @@ class StaffLoginIntegrationTest {
 
         assertThat(mvcResult.getResponse().getStatus()).isEqualTo(401);
         assertThat(mvcResult.getResponse().getStatus()).isNotEqualTo(423);
+
+        // Verify no session created
+        Integer sessionCount = adminJdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM staff_refresh_tokens WHERE staff_user_id = ?",
+                Integer.class,
+                staffId
+        );
+        assertThat(sessionCount).isEqualTo(0);
     }
 
     @Test
     @DisplayName("Lockout Defense: Locked staff returns generic HTTP 401 (never HTTP 423) without enumeration")
     void shouldRejectLockedStaffWithGeneric401() throws Exception {
         String email = "locked" + TEST_DOMAIN;
-        createTestStaff(email, true, true, Instant.now().plusSeconds(900)); // Actively locked
+        UUID staffId = createTestStaff(email, true, true, Instant.now().plusSeconds(900)); // Actively locked
 
         StaffLoginRequest request = new StaffLoginRequest(email, DEFAULT_PASSWORD);
 
         MvcResult mvcResult = mockMvc.perform(post(LOGIN_ENDPOINT)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
+                        .content(objectMapper.writeValueAsString(request))
+                        .header("Origin", ALLOWED_ORIGIN))
                 .andExpect(status().isUnauthorized())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$.message").value("Invalid email or password."))
@@ -308,6 +342,14 @@ class StaffLoginIntegrationTest {
 
         assertThat(mvcResult.getResponse().getStatus()).isEqualTo(401);
         assertThat(mvcResult.getResponse().getStatus()).isNotEqualTo(423);
+
+        // Verify no session created
+        Integer sessionCount = adminJdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM staff_refresh_tokens WHERE staff_user_id = ?",
+                Integer.class,
+                staffId
+        );
+        assertThat(sessionCount).isEqualTo(0);
     }
 
     // =========================================================================
@@ -321,7 +363,8 @@ class StaffLoginIntegrationTest {
         StaffLoginRequest blankEmail = new StaffLoginRequest("", "ValidPassword#123");
         mockMvc.perform(post(LOGIN_ENDPOINT)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(blankEmail)))
+                        .content(objectMapper.writeValueAsString(blankEmail))
+                        .header("Origin", ALLOWED_ORIGIN))
                 .andExpect(status().isBadRequest())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$.status").value(400));
@@ -330,7 +373,8 @@ class StaffLoginIntegrationTest {
         StaffLoginRequest blankPassword = new StaffLoginRequest("valid@example.com", "");
         mockMvc.perform(post(LOGIN_ENDPOINT)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(blankPassword)))
+                        .content(objectMapper.writeValueAsString(blankPassword))
+                        .header("Origin", ALLOWED_ORIGIN))
                 .andExpect(status().isBadRequest())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$.status").value(400));
@@ -339,7 +383,8 @@ class StaffLoginIntegrationTest {
         StaffLoginRequest malformedEmail = new StaffLoginRequest("not-an-email", "ValidPassword#123");
         mockMvc.perform(post(LOGIN_ENDPOINT)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(malformedEmail)))
+                        .content(objectMapper.writeValueAsString(malformedEmail))
+                        .header("Origin", ALLOWED_ORIGIN))
                 .andExpect(status().isBadRequest())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$.status").value(400));
@@ -352,7 +397,8 @@ class StaffLoginIntegrationTest {
 
         mockMvc.perform(post(LOGIN_ENDPOINT)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(malformedJson))
+                        .content(malformedJson)
+                        .header("Origin", ALLOWED_ORIGIN))
                 .andExpect(status().isBadRequest())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$.status").value(400))
@@ -375,7 +421,8 @@ class StaffLoginIntegrationTest {
         for (int i = 1; i <= 5; i++) {
             mockMvc.perform(post(LOGIN_ENDPOINT)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(badRequest)))
+                            .content(objectMapper.writeValueAsString(badRequest))
+                            .header("Origin", ALLOWED_ORIGIN))
                     .andExpect(status().isUnauthorized())
                     .andExpect(jsonPath("$.message").value("Invalid email or password."));
         }
@@ -415,6 +462,7 @@ class StaffLoginIntegrationTest {
         mockMvc.perform(post(LOGIN_ENDPOINT)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request))
+                        .header("Origin", ALLOWED_ORIGIN)
                         .header("X-Forwarded-For", "203.0.113.195")) // Untrusted spoof attempt
                 .andExpect(status().isOk());
 
@@ -441,6 +489,7 @@ class StaffLoginIntegrationTest {
         mockMvc.perform(post(LOGIN_ENDPOINT)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request))
+                        .header("Origin", ALLOWED_ORIGIN)
                         .header("User-Agent", hugeUserAgent))
                 .andExpect(status().isOk());
 
@@ -450,5 +499,76 @@ class StaffLoginIntegrationTest {
                 email.toLowerCase()
         );
         assertThat(recordedUserAgent).hasSize(255);
+    }
+
+    // =========================================================================
+    // 6. CSRF & Origin Defense on Login
+    // =========================================================================
+
+    @Test
+    @DisplayName("Origin Defense: Missing Origin header on login is rejected with 403 Forbidden without audit")
+    void shouldRejectMissingOriginOnLoginWithoutAudit() throws Exception {
+        String email = "noorigin" + TEST_DOMAIN;
+        UUID staffId = createTestStaff(email, true, false, null);
+
+        StaffLoginRequest request = new StaffLoginRequest(email, DEFAULT_PASSWORD);
+
+        mockMvc.perform(post(LOGIN_ENDPOINT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request))) // No Origin header
+                .andExpect(status().isForbidden())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(jsonPath("$.status").value(403))
+                .andExpect(jsonPath("$.message").value("Cross-origin request rejected"));
+
+        // Verify NO refresh token session created
+        Integer sessionCount = adminJdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM staff_refresh_tokens WHERE staff_user_id = ?",
+                Integer.class,
+                staffId
+        );
+        assertThat(sessionCount).isEqualTo(0);
+
+        // Verify NO login audit recorded
+        Integer auditCount = adminJdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM staff_security_audit_events WHERE email = ?",
+                Integer.class,
+                email.toLowerCase()
+        );
+        assertThat(auditCount).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("Origin Defense: Untrusted Origin header on login is rejected with 403 Forbidden without audit")
+    void shouldRejectUntrustedOriginOnLoginWithoutAudit() throws Exception {
+        String email = "untrusted" + TEST_DOMAIN;
+        UUID staffId = createTestStaff(email, true, false, null);
+
+        StaffLoginRequest request = new StaffLoginRequest(email, DEFAULT_PASSWORD);
+
+        mockMvc.perform(post(LOGIN_ENDPOINT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request))
+                        .header("Origin", "https://malicious-phishing.example.com"))
+                .andExpect(status().isForbidden())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(jsonPath("$.status").value(403))
+                .andExpect(jsonPath("$.message").value("Cross-origin request rejected"));
+
+        // Verify NO refresh token session created
+        Integer sessionCount = adminJdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM staff_refresh_tokens WHERE staff_user_id = ?",
+                Integer.class,
+                staffId
+        );
+        assertThat(sessionCount).isEqualTo(0);
+
+        // Verify NO login audit recorded
+        Integer auditCount = adminJdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM staff_security_audit_events WHERE email = ?",
+                Integer.class,
+                email.toLowerCase()
+        );
+        assertThat(auditCount).isEqualTo(0);
     }
 }
