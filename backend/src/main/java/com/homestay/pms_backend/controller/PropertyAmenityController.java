@@ -2,6 +2,8 @@ package com.homestay.pms_backend.controller;
 
 import com.homestay.pms_backend.dto.request.PropertyAmenityCreateRequest;
 import com.homestay.pms_backend.dto.response.PropertyAmenityResponse;
+import com.homestay.pms_backend.security.authorization.PropertyAuthorizationGuard;
+import com.homestay.pms_backend.security.authorization.StaffOperation;
 import com.homestay.pms_backend.service.PropertyAmenityService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -9,7 +11,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 @RestController
@@ -18,10 +22,13 @@ import java.util.UUID;
 public class PropertyAmenityController {
 
     private final PropertyAmenityService propertyAmenityService;
+    private final PropertyAuthorizationGuard propertyAuthorizationGuard;
 
     @PostMapping
     public ResponseEntity<PropertyAmenityResponse> addAmenityToProperty(
             @Valid @RequestBody PropertyAmenityCreateRequest request) {
+
+        propertyAuthorizationGuard.requirePropertyExistenceAndAccess(request.getPropertyId(), StaffOperation.PROPERTY_MANAGE);
 
         PropertyAmenityResponse response =
                 propertyAmenityService.addAmenityToProperty(request);
@@ -32,33 +39,45 @@ public class PropertyAmenityController {
     }
 
     @GetMapping("/property/{propertyId}")
-    public ResponseEntity<List<PropertyAmenityResponse>>
-    getAmenitiesByPropertyId(
+    public ResponseEntity<List<PropertyAmenityResponse>> getAmenitiesByPropertyId(
             @PathVariable UUID propertyId) {
 
+        propertyAuthorizationGuard.requirePropertyExistenceAndAccess(propertyId, StaffOperation.PROPERTY_READ);
+
         List<PropertyAmenityResponse> response =
-                propertyAmenityService
-                        .getAmenitiesByPropertyId(propertyId);
+                propertyAmenityService.getAmenitiesByPropertyId(propertyId);
 
         return ResponseEntity.ok(response);
     }
 
     @GetMapping("/amenity/{amenityId}")
-    public ResponseEntity<List<PropertyAmenityResponse>>
-    getPropertiesByAmenityId(
+    public ResponseEntity<List<PropertyAmenityResponse>> getPropertiesByAmenityId(
             @PathVariable UUID amenityId) {
 
-        List<PropertyAmenityResponse> response =
-                propertyAmenityService
-                        .getPropertiesByAmenityId(amenityId);
+        propertyAuthorizationGuard.validateAmenityExists(amenityId);
 
-        return ResponseEntity.ok(response);
+        if (!propertyAuthorizationGuard.isEnforcementEnabled() || propertyAuthorizationGuard.isGlobalSuperAdmin()) {
+            return ResponseEntity.ok(
+                    propertyAmenityService.getPropertiesByAmenityId(amenityId)
+            );
+        }
+
+        Set<UUID> authorizedPropertyIds = propertyAuthorizationGuard.getAuthorizedPropertyIds(StaffOperation.PROPERTY_READ);
+        if (authorizedPropertyIds.isEmpty()) {
+            return ResponseEntity.ok(Collections.emptyList());
+        }
+
+        return ResponseEntity.ok(
+                propertyAmenityService.getPropertiesByAmenityIdAndPropertyIds(amenityId, authorizedPropertyIds)
+        );
     }
 
     @DeleteMapping("/{propertyId}/{amenityId}")
     public ResponseEntity<Void> removeAmenityFromProperty(
             @PathVariable UUID propertyId,
             @PathVariable UUID amenityId) {
+
+        propertyAuthorizationGuard.requirePropertyExistenceAndAccess(propertyId, StaffOperation.PROPERTY_MANAGE);
 
         propertyAmenityService.removeAmenityFromProperty(
                 propertyId,

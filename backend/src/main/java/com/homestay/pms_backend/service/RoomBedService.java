@@ -4,6 +4,7 @@ import com.homestay.pms_backend.dto.request.RoomBedCreateRequest;
 import com.homestay.pms_backend.dto.request.RoomBedUpdateRequest;
 import com.homestay.pms_backend.dto.response.RoomBedResponse;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
@@ -16,6 +17,8 @@ public interface RoomBedService {
     List<RoomBedResponse> getRoomBedsByRoomId(UUID roomId);
 
     List<RoomBedResponse> getRoomBedsByBedTypeId(UUID bedTypeId);
+
+    List<RoomBedResponse> getRoomBedsByBedTypeIdAndPropertyIds(UUID bedTypeId, Collection<UUID> propertyIds);
 
     RoomBedResponse updateRoomBed(
             UUID id,

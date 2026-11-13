@@ -126,6 +126,29 @@ public class RoomAmenityServiceImpl implements RoomAmenityService {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public List<RoomAmenityResponse> getRoomsByAmenityIdAndPropertyIds(
+            UUID amenityId,
+            java.util.Collection<UUID> propertyIds) {
+
+        if (!amenityRepository.existsById(amenityId)) {
+            throw new ResourceNotFoundException(
+                    "Amenity not found with id: " + amenityId
+            );
+        }
+
+        if (propertyIds == null || propertyIds.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+
+        return roomAmenityRepository
+                .findByAmenityIdAndPropertyIdIn(amenityId, propertyIds)
+                .stream()
+                .map(roomAmenityMapper::toResponse)
+                .toList();
+    }
+
+    @Override
     public void removeAmenityFromRoom(
             UUID roomId,
             UUID amenityId) {

@@ -1,14 +1,16 @@
 package com.homestay.pms_backend.security.authorization;
 
 import com.homestay.pms_backend.config.SecurityEnforcementProperties;
+import com.homestay.pms_backend.dto.response.PropertyAmenityResponse;
 import com.homestay.pms_backend.dto.response.PropertyResponse;
+import com.homestay.pms_backend.dto.response.RoomAmenityResponse;
+import com.homestay.pms_backend.dto.response.RoomBedResponse;
 import com.homestay.pms_backend.entity.Room;
+import com.homestay.pms_backend.entity.RoomBed;
 import com.homestay.pms_backend.entity.RoomType;
 import com.homestay.pms_backend.exception.BusinessValidationException;
 import com.homestay.pms_backend.exception.ResourceNotFoundException;
-import com.homestay.pms_backend.repository.PropertyRepository;
-import com.homestay.pms_backend.repository.RoomRepository;
-import com.homestay.pms_backend.repository.RoomTypeRepository;
+import com.homestay.pms_backend.repository.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -42,6 +44,15 @@ class PropertyAuthorizationGuardUnitTest {
     @Mock
     private RoomTypeRepository roomTypeRepository;
 
+    @Mock
+    private RoomBedRepository roomBedRepository;
+
+    @Mock
+    private BedTypeRepository bedTypeRepository;
+
+    @Mock
+    private AmenityRepository amenityRepository;
+
     private SecurityEnforcementProperties enabledProperties;
     private SecurityEnforcementProperties disabledProperties;
 
@@ -52,6 +63,9 @@ class PropertyAuthorizationGuardUnitTest {
     private final UUID propertyIdB = UUID.randomUUID();
     private final UUID roomId = UUID.randomUUID();
     private final UUID roomTypeId = UUID.randomUUID();
+    private final UUID roomBedId = UUID.randomUUID();
+    private final UUID bedTypeId = UUID.randomUUID();
+    private final UUID amenityId = UUID.randomUUID();
 
     @BeforeEach
     void setUp() {
@@ -66,7 +80,10 @@ class PropertyAuthorizationGuardUnitTest {
                 enabledProperties,
                 propertyRepository,
                 roomRepository,
-                roomTypeRepository
+                roomTypeRepository,
+                roomBedRepository,
+                bedTypeRepository,
+                amenityRepository
         );
 
         disabledGuard = new PropertyAuthorizationGuard(
@@ -74,7 +91,10 @@ class PropertyAuthorizationGuardUnitTest {
                 disabledProperties,
                 propertyRepository,
                 roomRepository,
-                roomTypeRepository
+                roomTypeRepository,
+                roomBedRepository,
+                bedTypeRepository,
+                amenityRepository
         );
     }
 
@@ -83,11 +103,76 @@ class PropertyAuthorizationGuardUnitTest {
     void isEnforcementEnabled_reflectsConfiguration() {
         assertThat(enabledGuard.isEnforcementEnabled()).isTrue();
         assertThat(disabledGuard.isEnforcementEnabled()).isFalse();
+    }
 
-        PropertyAuthorizationGuard nullPropsGuard = new PropertyAuthorizationGuard(
-                authorizationService, null, propertyRepository, roomRepository, roomTypeRepository
-        );
-        assertThat(nullPropsGuard.isEnforcementEnabled()).isFalse();
+    @Test
+    @DisplayName("Constructor rejects null SecurityEnforcementProperties to fail closed on missing configuration")
+    void constructor_rejectsNullEnforcementProperties_failClosed() {
+        assertThatThrownBy(() -> new PropertyAuthorizationGuard(
+                authorizationService,
+                null,
+                propertyRepository,
+                roomRepository,
+                roomTypeRepository,
+                roomBedRepository,
+                bedTypeRepository,
+                amenityRepository
+        ))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("SecurityEnforcementProperties must not be null");
+    }
+
+    @Test
+    @DisplayName("Constructor rejects null required dependencies to guarantee fail-closed integrity")
+    void constructor_rejectsNullDependencies() {
+        assertThatThrownBy(() -> new PropertyAuthorizationGuard(
+                null, enabledProperties, propertyRepository, roomRepository, roomTypeRepository,
+                roomBedRepository, bedTypeRepository, amenityRepository
+        ))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("StaffAuthorizationService must not be null");
+
+        assertThatThrownBy(() -> new PropertyAuthorizationGuard(
+                authorizationService, enabledProperties, null, roomRepository, roomTypeRepository,
+                roomBedRepository, bedTypeRepository, amenityRepository
+        ))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("PropertyRepository must not be null");
+
+        assertThatThrownBy(() -> new PropertyAuthorizationGuard(
+                authorizationService, enabledProperties, propertyRepository, null, roomTypeRepository,
+                roomBedRepository, bedTypeRepository, amenityRepository
+        ))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("RoomRepository must not be null");
+
+        assertThatThrownBy(() -> new PropertyAuthorizationGuard(
+                authorizationService, enabledProperties, propertyRepository, roomRepository, null,
+                roomBedRepository, bedTypeRepository, amenityRepository
+        ))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("RoomTypeRepository must not be null");
+
+        assertThatThrownBy(() -> new PropertyAuthorizationGuard(
+                authorizationService, enabledProperties, propertyRepository, roomRepository, roomTypeRepository,
+                null, bedTypeRepository, amenityRepository
+        ))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("RoomBedRepository must not be null");
+
+        assertThatThrownBy(() -> new PropertyAuthorizationGuard(
+                authorizationService, enabledProperties, propertyRepository, roomRepository, roomTypeRepository,
+                roomBedRepository, null, amenityRepository
+        ))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("BedTypeRepository must not be null");
+
+        assertThatThrownBy(() -> new PropertyAuthorizationGuard(
+                authorizationService, enabledProperties, propertyRepository, roomRepository, roomTypeRepository,
+                roomBedRepository, bedTypeRepository, null
+        ))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("AmenityRepository must not be null");
     }
 
     @Test
@@ -194,6 +279,7 @@ class PropertyAuthorizationGuardUnitTest {
 
         // Found in DB, but out-of-scope -> 404 (indistinguishable from nonexistent)
         when(propertyRepository.existsById(propertyIdA)).thenReturn(true);
+        when(authorizationService.isGlobalSuperAdmin()).thenReturn(false);
         when(authorizationService.isAssignedToProperty(propertyIdA)).thenReturn(false);
         assertThatThrownBy(() -> enabledGuard.requirePropertyExistenceAndAccess(propertyIdA, StaffOperation.PROPERTY_READ))
                 .isInstanceOf(ResourceNotFoundException.class)
@@ -251,6 +337,7 @@ class PropertyAuthorizationGuardUnitTest {
         roomB.setId(roomId);
         roomB.setPropertyId(propertyIdB);
         when(roomRepository.findById(roomId)).thenReturn(Optional.of(roomB));
+        when(authorizationService.isGlobalSuperAdmin()).thenReturn(false);
         when(authorizationService.isAssignedToProperty(propertyIdB)).thenReturn(false);
 
         assertThatThrownBy(() -> enabledGuard.requireRoomAccess(roomId, StaffOperation.ROOM_READ))
@@ -314,6 +401,7 @@ class PropertyAuthorizationGuardUnitTest {
         roomTypeB.setId(roomTypeId);
         roomTypeB.setPropertyId(propertyIdB);
         when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomTypeB));
+        when(authorizationService.isGlobalSuperAdmin()).thenReturn(false);
         when(authorizationService.isAssignedToProperty(propertyIdB)).thenReturn(false);
 
         assertThatThrownBy(() -> enabledGuard.requireRoomTypeAccess(roomTypeId, StaffOperation.ROOM_READ))
@@ -381,6 +469,7 @@ class PropertyAuthorizationGuardUnitTest {
 
         // Property exists in DB, but outside caller's scope -> 404
         when(propertyRepository.existsById(propertyIdA)).thenReturn(true);
+        when(authorizationService.isGlobalSuperAdmin()).thenReturn(false);
         when(authorizationService.isAssignedToProperty(propertyIdA)).thenReturn(false);
         assertThatThrownBy(() -> enabledGuard.validateRoomCreation(propertyIdA, roomTypeId))
                 .isInstanceOf(ResourceNotFoundException.class)
@@ -461,6 +550,7 @@ class PropertyAuthorizationGuardUnitTest {
 
         // Property exists, but out of scope -> 404
         when(propertyRepository.existsById(propertyIdA)).thenReturn(true);
+        when(authorizationService.isGlobalSuperAdmin()).thenReturn(false);
         when(authorizationService.isAssignedToProperty(propertyIdA)).thenReturn(false);
         assertThatThrownBy(() -> enabledGuard.validateRoomQuery(propertyIdA, roomTypeId))
                 .isInstanceOf(ResourceNotFoundException.class)
@@ -500,6 +590,167 @@ class PropertyAuthorizationGuardUnitTest {
     }
 
     @Test
+    @DisplayName("validateRoomBedCreation enforces existence, scope, and authorization")
+    void validateRoomBedCreation_behavior() {
+        // Null roomId -> 400
+        assertThatThrownBy(() -> enabledGuard.validateRoomBedCreation(null))
+                .isInstanceOf(BusinessValidationException.class);
+
+        // Room not found -> 404
+        when(roomRepository.findById(roomId)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> enabledGuard.validateRoomBedCreation(roomId))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        // Room exists, but out of scope -> 404
+        Room roomB = new Room();
+        roomB.setId(roomId);
+        roomB.setPropertyId(propertyIdB);
+        when(roomRepository.findById(roomId)).thenReturn(Optional.of(roomB));
+        when(authorizationService.isGlobalSuperAdmin()).thenReturn(false);
+        when(authorizationService.isAssignedToProperty(propertyIdB)).thenReturn(false);
+
+        assertThatThrownBy(() -> enabledGuard.validateRoomBedCreation(roomId))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        // Room in scope, but lacks ROOM_MANAGE -> 403
+        Room roomA = new Room();
+        roomA.setId(roomId);
+        roomA.setPropertyId(propertyIdA);
+        when(roomRepository.findById(roomId)).thenReturn(Optional.of(roomA));
+        when(authorizationService.isAssignedToProperty(propertyIdA)).thenReturn(true);
+        when(authorizationService.hasPropertyAccess(propertyIdA, StaffOperation.ROOM_MANAGE)).thenReturn(false);
+
+        assertThatThrownBy(() -> enabledGuard.validateRoomBedCreation(roomId))
+                .isInstanceOf(AccessDeniedException.class);
+
+        // Room in scope, authorized -> success
+        when(authorizationService.hasPropertyAccess(propertyIdA, StaffOperation.ROOM_MANAGE)).thenReturn(true);
+        enabledGuard.validateRoomBedCreation(roomId);
+
+        // Disabled mode bypasses scope and permissions
+        disabledGuard.validateRoomBedCreation(roomId);
+    }
+
+    @Test
+    @DisplayName("requireRoomBedAccess enforces 404 for nonexistent/out-of-scope, 403 for permission denial")
+    void requireRoomBedAccess_behavior() {
+        // Disabled mode bypasses
+        disabledGuard.requireRoomBedAccess(roomBedId, StaffOperation.ROOM_READ);
+
+        // RoomBed not found -> 404
+        when(roomBedRepository.findById(roomBedId)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> enabledGuard.requireRoomBedAccess(roomBedId, StaffOperation.ROOM_READ))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessage("Room bed configuration not found with id: " + roomBedId);
+
+        // RoomBed found, Room not found -> 404
+        RoomBed rb = new RoomBed();
+        rb.setId(roomBedId);
+        rb.setRoomId(roomId);
+        when(roomBedRepository.findById(roomBedId)).thenReturn(Optional.of(rb));
+        when(roomRepository.findById(roomId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> enabledGuard.requireRoomBedAccess(roomBedId, StaffOperation.ROOM_READ))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        // RoomBed found, Room belongs to out-of-scope property -> 404
+        Room roomB = new Room();
+        roomB.setId(roomId);
+        roomB.setPropertyId(propertyIdB);
+        when(roomRepository.findById(roomId)).thenReturn(Optional.of(roomB));
+        when(authorizationService.isGlobalSuperAdmin()).thenReturn(false);
+        when(authorizationService.isAssignedToProperty(propertyIdB)).thenReturn(false);
+
+        assertThatThrownBy(() -> enabledGuard.requireRoomBedAccess(roomBedId, StaffOperation.ROOM_READ))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessage("Room bed configuration not found with id: " + roomBedId);
+
+        // In scope, lacks permission -> 403
+        Room roomA = new Room();
+        roomA.setId(roomId);
+        roomA.setPropertyId(propertyIdA);
+        when(roomRepository.findById(roomId)).thenReturn(Optional.of(roomA));
+        when(authorizationService.isAssignedToProperty(propertyIdA)).thenReturn(true);
+        when(authorizationService.hasPropertyAccess(propertyIdA, StaffOperation.ROOM_MANAGE)).thenReturn(false);
+
+        assertThatThrownBy(() -> enabledGuard.requireRoomBedAccess(roomBedId, StaffOperation.ROOM_MANAGE))
+                .isInstanceOf(AccessDeniedException.class)
+                .hasMessage("Access is denied.");
+
+        // In scope, authorized -> success
+        when(authorizationService.hasPropertyAccess(propertyIdA, StaffOperation.ROOM_MANAGE)).thenReturn(true);
+        enabledGuard.requireRoomBedAccess(roomBedId, StaffOperation.ROOM_MANAGE);
+    }
+
+    @Test
+    @DisplayName("validateRoomAmenityAssignment enforces existence, scope, and authorization")
+    void validateRoomAmenityAssignment_behavior() {
+        // Null roomId -> 400
+        assertThatThrownBy(() -> enabledGuard.validateRoomAmenityAssignment(null))
+                .isInstanceOf(BusinessValidationException.class);
+
+        // Room not found -> 404
+        when(roomRepository.findById(roomId)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> enabledGuard.validateRoomAmenityAssignment(roomId))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        // Room out of scope -> 404
+        Room roomB = new Room();
+        roomB.setId(roomId);
+        roomB.setPropertyId(propertyIdB);
+        when(roomRepository.findById(roomId)).thenReturn(Optional.of(roomB));
+        when(authorizationService.isGlobalSuperAdmin()).thenReturn(false);
+        when(authorizationService.isAssignedToProperty(propertyIdB)).thenReturn(false);
+
+        assertThatThrownBy(() -> enabledGuard.validateRoomAmenityAssignment(roomId))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        // In scope, lacks ROOM_MANAGE -> 403
+        Room roomA = new Room();
+        roomA.setId(roomId);
+        roomA.setPropertyId(propertyIdA);
+        when(roomRepository.findById(roomId)).thenReturn(Optional.of(roomA));
+        when(authorizationService.isAssignedToProperty(propertyIdA)).thenReturn(true);
+        when(authorizationService.hasPropertyAccess(propertyIdA, StaffOperation.ROOM_MANAGE)).thenReturn(false);
+
+        assertThatThrownBy(() -> enabledGuard.validateRoomAmenityAssignment(roomId))
+                .isInstanceOf(AccessDeniedException.class);
+
+        // In scope, authorized -> success
+        when(authorizationService.hasPropertyAccess(propertyIdA, StaffOperation.ROOM_MANAGE)).thenReturn(true);
+        enabledGuard.validateRoomAmenityAssignment(roomId);
+
+        // Disabled mode bypasses scope and permissions
+        disabledGuard.validateRoomAmenityAssignment(roomId);
+    }
+
+    @Test
+    @DisplayName("validateBedTypeExists and validateAmenityExists enforce existence")
+    void dictionaryEntityValidations_behavior() {
+        // Bed type null or not found -> 404
+        assertThatThrownBy(() -> enabledGuard.validateBedTypeExists(null))
+                .isInstanceOf(ResourceNotFoundException.class);
+        when(bedTypeRepository.existsById(bedTypeId)).thenReturn(false);
+        assertThatThrownBy(() -> enabledGuard.validateBedTypeExists(bedTypeId))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        // Bed type exists -> success
+        when(bedTypeRepository.existsById(bedTypeId)).thenReturn(true);
+        enabledGuard.validateBedTypeExists(bedTypeId);
+
+        // Amenity null or not found -> 404
+        assertThatThrownBy(() -> enabledGuard.validateAmenityExists(null))
+                .isInstanceOf(ResourceNotFoundException.class);
+        when(amenityRepository.existsById(amenityId)).thenReturn(false);
+        assertThatThrownBy(() -> enabledGuard.validateAmenityExists(amenityId))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        // Amenity exists -> success
+        when(amenityRepository.existsById(amenityId)).thenReturn(true);
+        enabledGuard.validateAmenityExists(amenityId);
+    }
+
+    @Test
     @DisplayName("filterAuthorizedProperties returns appropriate list based on staff permissions")
     void filterAuthorizedProperties_behavior() {
         PropertyResponse prop1 = new PropertyResponse();
@@ -529,5 +780,36 @@ class PropertyAuthorizationGuardUnitTest {
         when(authorizationService.hasPropertyAccess(propertyIdA, StaffOperation.PROPERTY_READ)).thenReturn(true);
         List<PropertyResponse> filtered = enabledGuard.filterAuthorizedProperties(allProps);
         assertThat(filtered).containsExactly(prop1);
+    }
+
+    @Test
+    @DisplayName("filterAuthorizedPropertyAmenities filters associations based on PROPERTY_READ permission")
+    void filterAuthorizedPropertyAmenities_behavior() {
+        PropertyAmenityResponse pa1 = new PropertyAmenityResponse();
+        pa1.setPropertyId(propertyIdA);
+        pa1.setAmenityId(amenityId);
+
+        PropertyAmenityResponse pa2 = new PropertyAmenityResponse();
+        pa2.setPropertyId(propertyIdB);
+        pa2.setAmenityId(amenityId);
+
+        List<PropertyAmenityResponse> list = List.of(pa1, pa2);
+
+        // Disabled mode -> all
+        assertThat(disabledGuard.filterAuthorizedPropertyAmenities(list)).containsExactlyElementsOf(list);
+
+        // Super admin -> all
+        when(authorizationService.isGlobalSuperAdmin()).thenReturn(true);
+        assertThat(enabledGuard.filterAuthorizedPropertyAmenities(list)).containsExactlyElementsOf(list);
+
+        // Unassigned staff -> empty
+        when(authorizationService.isGlobalSuperAdmin()).thenReturn(false);
+        when(authorizationService.getAssignedPropertyIds()).thenReturn(Set.of());
+        assertThat(enabledGuard.filterAuthorizedPropertyAmenities(list)).isEmpty();
+
+        // Assigned to property A only
+        when(authorizationService.getAssignedPropertyIds()).thenReturn(Set.of(propertyIdA));
+        when(authorizationService.hasPropertyAccess(propertyIdA, StaffOperation.PROPERTY_READ)).thenReturn(true);
+        assertThat(enabledGuard.filterAuthorizedPropertyAmenities(list)).containsExactly(pa1);
     }
 }

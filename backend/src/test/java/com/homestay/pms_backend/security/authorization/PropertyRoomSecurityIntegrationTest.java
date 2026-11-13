@@ -9,7 +9,11 @@ import com.homestay.pms_backend.entity.RoomType;
 import com.homestay.pms_backend.enums.RoomStatus;
 import com.homestay.pms_backend.enums.RoomTypeCategory;
 import com.homestay.pms_backend.exception.BusinessValidationException;
+import com.homestay.pms_backend.repository.AmenityRepository;
+import com.homestay.pms_backend.repository.BedTypeRepository;
 import com.homestay.pms_backend.repository.PropertyRepository;
+import com.homestay.pms_backend.repository.RoomAmenityRepository;
+import com.homestay.pms_backend.repository.RoomBedRepository;
 import com.homestay.pms_backend.repository.RoomRepository;
 import com.homestay.pms_backend.repository.RoomTypeRepository;
 import com.homestay.pms_backend.security.AuthenticatedStaff;
@@ -69,6 +73,15 @@ class PropertyRoomSecurityIntegrationTest {
 
     @Autowired
     private RoomRepository roomRepository;
+
+    @Autowired
+    private RoomBedRepository roomBedRepository;
+
+    @Autowired
+    private BedTypeRepository bedTypeRepository;
+
+    @Autowired
+    private AmenityRepository amenityRepository;
 
     @Autowired
     private Environment environment;
@@ -973,7 +986,10 @@ class PropertyRoomSecurityIntegrationTest {
                 disabledProps,
                 propertyRepository,
                 roomRepository,
-                roomTypeRepository
+                roomTypeRepository,
+                roomBedRepository,
+                bedTypeRepository,
+                amenityRepository
         );
 
         // Cross-property room creation must throw 400 BusinessValidationException even in dev mode

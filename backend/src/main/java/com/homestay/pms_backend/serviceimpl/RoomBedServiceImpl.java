@@ -97,6 +97,24 @@ public class RoomBedServiceImpl implements RoomBedService {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public List<RoomBedResponse> getRoomBedsByBedTypeIdAndPropertyIds(
+            UUID bedTypeId,
+            java.util.Collection<UUID> propertyIds) {
+
+        validateBedTypeExists(bedTypeId);
+
+        if (propertyIds == null || propertyIds.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+
+        return roomBedRepository.findByBedTypeIdAndPropertyIdIn(bedTypeId, propertyIds)
+                .stream()
+                .map(roomBedMapper::toResponse)
+                .toList();
+    }
+
+    @Override
     public RoomBedResponse updateRoomBed(
             UUID id,
             RoomBedUpdateRequest request) {

@@ -127,6 +127,29 @@ public class PropertyAmenityServiceImpl
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public List<PropertyAmenityResponse> getPropertiesByAmenityIdAndPropertyIds(
+            UUID amenityId,
+            java.util.Collection<UUID> propertyIds) {
+
+        if (!amenityRepository.existsById(amenityId)) {
+            throw new ResourceNotFoundException(
+                    "Amenity not found with id: " + amenityId
+            );
+        }
+
+        if (propertyIds == null || propertyIds.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+
+        return propertyAmenityRepository
+                .findByAmenityIdAndPropertyIdIn(amenityId, propertyIds)
+                .stream()
+                .map(propertyAmenityMapper::toResponse)
+                .toList();
+    }
+
+    @Override
     public void removeAmenityFromProperty(
             UUID propertyId,
             UUID amenityId) {
