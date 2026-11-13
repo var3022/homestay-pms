@@ -1,11 +1,15 @@
 package com.homestay.pms_backend.exception;
 
 import com.homestay.pms_backend.security.StaffAuthenticationException;
+import com.homestay.pms_backend.security.refreshtoken.AuthCookieManager;
+import com.homestay.pms_backend.security.refreshtoken.InvalidRefreshTokenException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -20,6 +24,62 @@ import java.util.stream.Collectors;
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    private final AuthCookieManager authCookieManager;
+
+    public GlobalExceptionHandler(@Autowired(required = false) AuthCookieManager authCookieManager) {
+        this.authCookieManager = authCookieManager;
+    }
+
+    public GlobalExceptionHandler() {
+        this(null);
+    }
+
+    @ExceptionHandler(InvalidRefreshTokenException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidRefreshToken(
+            InvalidRefreshTokenException exception) {
+
+        log.warn("Invalid refresh token operation rejected: {}", exception.getMessage());
+
+        ResponseCookie clearCookie = authCookieManager != null
+                ? authCookieManager.createRemovalCookie()
+                : ResponseCookie.from("__Host-pms-refresh", "")
+                        .httpOnly(true).secure(true).path("/").sameSite("Strict").maxAge(0).build();
+
+        ErrorResponse response = new ErrorResponse(
+                Instant.now(),
+                HttpStatus.UNAUTHORIZED.value(),
+                "Unauthorized",
+                "Invalid or expired session"
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.UNAUTHORIZED)
+                .header(HttpHeaders.SET_COOKIE, clearCookie.toString())
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .header(HttpHeaders.PRAGMA, "no-cache")
+                .body(response);
+    }
+
+    @ExceptionHandler(OriginValidationException.class)
+    public ResponseEntity<ErrorResponse> handleOriginValidation(
+            OriginValidationException exception) {
+
+        log.warn("Origin validation failed: {}", exception.getMessage());
+
+        ErrorResponse response = new ErrorResponse(
+                Instant.now(),
+                HttpStatus.FORBIDDEN.value(),
+                "Forbidden",
+                "Cross-origin request rejected"
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.FORBIDDEN)
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .header(HttpHeaders.PRAGMA, "no-cache")
+                .body(response);
+    }
 
     @ExceptionHandler(StaffAuthenticationException.class)
     public ResponseEntity<ErrorResponse> handleStaffAuthentication(

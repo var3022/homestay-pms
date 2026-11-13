@@ -105,4 +105,8 @@ public class ClientContextExtractor {
         }
         return sanitized;
     }
+
+    public Set<String> getTrustedProxies() {
+        return java.util.Collections.unmodifiableSet(trustedProxies);
+    }
 }

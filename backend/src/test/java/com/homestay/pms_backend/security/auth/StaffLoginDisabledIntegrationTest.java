@@ -50,6 +50,12 @@ class StaffLoginDisabledIntegrationTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(SAMPLE_PAYLOAD))
                     .andExpect(status().isNotFound());
+
+            mockMvc.perform(post("/api/v1/auth/refresh"))
+                    .andExpect(status().isNotFound());
+
+            mockMvc.perform(post("/api/v1/auth/logout"))
+                    .andExpect(status().isNotFound());
         }
     }
 
@@ -78,6 +84,12 @@ class StaffLoginDisabledIntegrationTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(SAMPLE_PAYLOAD))
                     .andExpect(status().isNotFound());
+
+            mockMvc.perform(post("/api/v1/auth/refresh"))
+                    .andExpect(status().isNotFound());
+
+            mockMvc.perform(post("/api/v1/auth/logout"))
+                    .andExpect(status().isNotFound());
         }
     }
 
@@ -105,6 +117,12 @@ class StaffLoginDisabledIntegrationTest {
             mockMvc.perform(post("/api/v1/auth/login")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(SAMPLE_PAYLOAD))
+                    .andExpect(status().isNotFound());
+
+            mockMvc.perform(post("/api/v1/auth/refresh"))
+                    .andExpect(status().isNotFound());
+
+            mockMvc.perform(post("/api/v1/auth/logout"))
                     .andExpect(status().isNotFound());
         }
     }

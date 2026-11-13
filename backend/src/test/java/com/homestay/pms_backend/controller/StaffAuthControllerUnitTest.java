@@ -7,10 +7,14 @@ import com.homestay.pms_backend.exception.GlobalExceptionHandler;
 import com.homestay.pms_backend.security.AuthenticatedStaff;
 import com.homestay.pms_backend.security.StaffAuthenticationException;
 import com.homestay.pms_backend.security.StaffAuthenticationService;
+import com.homestay.pms_backend.security.StaffIdentityLookup;
 import com.homestay.pms_backend.security.auth.ClientContext;
 import com.homestay.pms_backend.security.auth.ClientContextExtractor;
+import com.homestay.pms_backend.security.auth.OriginValidator;
 import com.homestay.pms_backend.security.jwt.AccessTokenDto;
 import com.homestay.pms_backend.security.jwt.AccessTokenService;
+import com.homestay.pms_backend.security.refreshtoken.AuthCookieManager;
+import com.homestay.pms_backend.security.refreshtoken.RefreshTokenService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -41,6 +45,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class StaffAuthControllerUnitTest {
 
     private static final String LOGIN_URL = "/api/v1/auth/login";
+    private static final String REFRESH_URL = "/api/v1/auth/refresh";
+    private static final String LOGOUT_URL = "/api/v1/auth/logout";
 
     @Mock
     private StaffAuthenticationService staffAuthenticationService;
@@ -51,6 +57,18 @@ class StaffAuthControllerUnitTest {
     @Mock
     private ClientContextExtractor clientContextExtractor;
 
+    @Mock
+    private RefreshTokenService refreshTokenService;
+
+    @Mock
+    private StaffIdentityLookup staffIdentityLookup;
+
+    @Mock
+    private AuthCookieManager cookieManager;
+
+    @Mock
+    private OriginValidator originValidator;
+
     private MockMvc mockMvc;
     private ObjectMapper objectMapper;
 
@@ -59,10 +77,15 @@ class StaffAuthControllerUnitTest {
         StaffAuthController controller = new StaffAuthController(
                 staffAuthenticationService,
                 accessTokenService,
-                clientContextExtractor
+                clientContextExtractor,
+                refreshTokenService,
+                staffIdentityLookup,
+                cookieManager,
+                originValidator,
+                java.time.Clock.systemUTC()
         );
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
-                .setControllerAdvice(new GlobalExceptionHandler())
+                .setControllerAdvice(new GlobalExceptionHandler(cookieManager))
                 .build();
         objectMapper = new ObjectMapper();
     }
@@ -134,5 +157,134 @@ class StaffAuthControllerUnitTest {
                 .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("database connection closed"))));
 
         verifyNoInteractions(accessTokenService);
+    }
+
+    @Test
+    @DisplayName("Unit: Successful refresh rotates token, revalidates staff, issues JWT, sets replacement cookie, and returns 200")
+    void shouldOrchestrateSuccessfulRefresh() throws Exception {
+        UUID staffId = UUID.randomUUID();
+        UUID familyId = UUID.randomUUID();
+        String oldToken = "old-raw-refresh-token-43-chars-placeholder";
+        String newToken = "new-raw-refresh-token-43-chars-placeholder";
+
+        com.homestay.pms_backend.security.refreshtoken.RotatedRefreshToken rotated =
+                new com.homestay.pms_backend.security.refreshtoken.RotatedRefreshToken(
+                        newToken, UUID.randomUUID(), familyId, 2, Instant.now().plusSeconds(604800), staffId
+                );
+
+        com.homestay.pms_backend.security.StaffAuthAccount account =
+                new com.homestay.pms_backend.security.StaffAuthAccount(
+                        staffId, "alice@example.com", "hash", "Alice", "Admin", "+919876543210",
+                        true, false, 0, null, null, Instant.now().minusSeconds(3600), Instant.now(), Instant.now()
+                );
+
+        AccessTokenDto tokenDto = new AccessTokenDto("new.jwt.access.token", Instant.now().plusSeconds(900), "mock-jti-2", "access");
+        org.springframework.http.ResponseCookie replacementCookie =
+                org.springframework.http.ResponseCookie.from("__Host-pms-refresh", newToken)
+                        .httpOnly(true).secure(true).path("/").sameSite("Strict").maxAge(java.time.Duration.ofDays(7)).build();
+
+        when(cookieManager.extractRefreshToken(any())).thenReturn(oldToken);
+        when(clientContextExtractor.extract(any())).thenReturn(new ClientContext("192.168.1.100", "Mozilla/5.0 UnitTester"));
+        when(refreshTokenService.rotateToken(eq(oldToken), eq("192.168.1.100"), eq("Mozilla/5.0 UnitTester"))).thenReturn(rotated);
+        when(staffIdentityLookup.findById(staffId)).thenReturn(java.util.Optional.of(account));
+        when(accessTokenService.generateAccessToken(any())).thenReturn(tokenDto);
+        when(cookieManager.createRefreshCookie(newToken)).thenReturn(replacementCookie);
+
+        mockMvc.perform(post(REFRESH_URL)
+                        .header("Origin", "http://localhost:3000"))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(header().string(HttpHeaders.SET_COOKIE, org.hamcrest.Matchers.containsString("__Host-pms-refresh=" + newToken)))
+                .andExpect(jsonPath("$.accessToken").value("new.jwt.access.token"))
+                .andExpect(jsonPath("$.tokenType").value("access"))
+                .andExpect(jsonPath("$.staff.id").value(staffId.toString()))
+                .andExpect(jsonPath("$.staff.email").value("alice@example.com"));
+
+        verify(originValidator).validate(any());
+        verify(refreshTokenService).rotateToken(oldToken, "192.168.1.100", "Mozilla/5.0 UnitTester");
+        verify(accessTokenService).generateAccessToken(any());
+    }
+
+    @Test
+    @DisplayName("Unit: Missing refresh cookie is rejected with 401 and clears cookie")
+    void shouldRejectRefreshOnMissingCookie() throws Exception {
+        org.springframework.http.ResponseCookie clearCookie =
+                org.springframework.http.ResponseCookie.from("__Host-pms-refresh", "")
+                        .httpOnly(true).secure(true).path("/").sameSite("Strict").maxAge(java.time.Duration.ZERO).build();
+
+        when(cookieManager.extractRefreshToken(any()))
+                .thenThrow(new com.homestay.pms_backend.security.refreshtoken.InvalidRefreshTokenException("Missing refresh token cookie"));
+        when(cookieManager.createRemovalCookie()).thenReturn(clearCookie);
+
+        mockMvc.perform(post(REFRESH_URL)
+                        .header("Origin", "http://localhost:3000"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(header().string(HttpHeaders.SET_COOKIE, org.hamcrest.Matchers.containsString("Max-Age=0")))
+                .andExpect(jsonPath("$.status").value(401))
+                .andExpect(jsonPath("$.message").value("Invalid or expired session"));
+
+        verifyNoInteractions(refreshTokenService);
+        verifyNoInteractions(accessTokenService);
+    }
+
+    @Test
+    @DisplayName("Unit: Untrusted Origin throws OriginValidationException returning 403 Forbidden")
+    void shouldRejectRefreshOnUntrustedOrigin() throws Exception {
+        org.mockito.Mockito.doThrow(new com.homestay.pms_backend.exception.OriginValidationException("Origin not allowed: https://evil.com"))
+                .when(originValidator).validate(any());
+
+        mockMvc.perform(post(REFRESH_URL)
+                        .header("Origin", "https://evil.com"))
+                .andExpect(status().isForbidden())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(jsonPath("$.status").value(403))
+                .andExpect(jsonPath("$.message").value("Cross-origin request rejected"));
+
+        verifyNoInteractions(cookieManager);
+        verifyNoInteractions(refreshTokenService);
+    }
+
+    @Test
+    @DisplayName("Unit: Successful logout revokes session family, clears cookie, and returns 200")
+    void shouldOrchestrateSuccessfulLogout() throws Exception {
+        String rawToken = "some-refresh-token-for-logout";
+        org.springframework.http.ResponseCookie clearCookie =
+                org.springframework.http.ResponseCookie.from("__Host-pms-refresh", "")
+                        .httpOnly(true).secure(true).path("/").sameSite("Strict").maxAge(java.time.Duration.ZERO).build();
+
+        when(cookieManager.extractOptionalRefreshToken(any())).thenReturn(java.util.Optional.of(rawToken));
+        when(cookieManager.createRemovalCookie()).thenReturn(clearCookie);
+
+        mockMvc.perform(post(LOGOUT_URL)
+                        .header("Origin", "http://localhost:3000"))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(header().string(HttpHeaders.SET_COOKIE, org.hamcrest.Matchers.containsString("Max-Age=0")))
+                .andExpect(jsonPath("$.message").value("Logged out successfully"));
+
+        verify(originValidator).validate(any());
+        verify(refreshTokenService).revokeSession(rawToken, null, "system:auth");
+    }
+
+    @Test
+    @DisplayName("Unit: Logout without cookie succeeds idempotently and clears cookie")
+    void shouldHandleLogoutIdempotentlyWithoutCookie() throws Exception {
+        org.springframework.http.ResponseCookie clearCookie =
+                org.springframework.http.ResponseCookie.from("__Host-pms-refresh", "")
+                        .httpOnly(true).secure(true).path("/").sameSite("Strict").maxAge(java.time.Duration.ZERO).build();
+
+        when(cookieManager.extractOptionalRefreshToken(any())).thenReturn(java.util.Optional.empty());
+        when(cookieManager.createRemovalCookie()).thenReturn(clearCookie);
+
+        mockMvc.perform(post(LOGOUT_URL)
+                        .header("Origin", "http://localhost:3000"))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(header().string(HttpHeaders.SET_COOKIE, org.hamcrest.Matchers.containsString("Max-Age=0")))
+                .andExpect(jsonPath("$.message").value("Logged out successfully"));
+
+        verify(originValidator).validate(any());
+        verifyNoInteractions(refreshTokenService);
     }
 }
