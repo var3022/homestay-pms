@@ -56,6 +56,16 @@ public class TestDatabaseSafetyInitializer implements ApplicationContextInitiali
 
         validateConnectivity(datasourceUrl);
 
+        // Dedicated Authentication Datasource safety checks
+        String authEnabled = env.getProperty("auth.datasource.enabled");
+        String authUrl = env.getProperty("auth.datasource.url");
+        if (!"false".equalsIgnoreCase(authEnabled) && authUrl != null && !authUrl.isBlank()) {
+            validateSafety(authUrl, "auth.datasource.url");
+            String authPassword = env.getProperty("auth.datasource.password");
+            validateCredentials(authPassword, "auth.datasource.password");
+            validateConnectivity(authUrl);
+        }
+
         log.info("Test database safety checks passed. Target isolated datasource verified: {}", sanitizeUrl(datasourceUrl));
     }
 
@@ -98,9 +108,15 @@ public class TestDatabaseSafetyInitializer implements ApplicationContextInitiali
 
     public static void validateCredentials(String password, String propertyName) {
         if (password == null || password.isBlank()) {
+            String envVar = "TEST_DATASOURCE_PASSWORD";
+            if ("spring.flyway.password".equals(propertyName)) {
+                envVar = "TEST_FLYWAY_PASSWORD";
+            } else if ("auth.datasource.password".equals(propertyName)) {
+                envVar = "TEST_AUTH_DATASOURCE_PASSWORD";
+            }
             throw new IllegalStateException(
                 "FATAL CONFIGURATION ERROR: Test database credentials are not configured! Missing " +
-                "TEST_DATASOURCE_PASSWORD / TEST_FLYWAY_PASSWORD environment variable or " + propertyName + " property."
+                envVar + " environment variable or " + propertyName + " property."
             );
         }
     }

@@ -89,6 +89,20 @@ class TestDatabaseSafetyInitializerTest {
     }
 
     @Test
+    @DisplayName("Should strictly reject missing or blank auth database password mentioning TEST_AUTH_DATASOURCE_PASSWORD")
+    void shouldRejectMissingAuthPassword() {
+        assertThatThrownBy(() -> TestDatabaseSafetyInitializer.validateCredentials(null, "auth.datasource.password"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("FATAL CONFIGURATION ERROR")
+                .hasMessageContaining("TEST_AUTH_DATASOURCE_PASSWORD");
+
+        assertThatThrownBy(() -> TestDatabaseSafetyInitializer.validateCredentials("   ", "auth.datasource.password"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("FATAL CONFIGURATION ERROR")
+                .hasMessageContaining("TEST_AUTH_DATASOURCE_PASSWORD");
+    }
+
+    @Test
     @DisplayName("Should accept valid non-blank database password")
     void shouldAcceptValidPassword() {
         assertThatCode(() -> TestDatabaseSafetyInitializer.validateCredentials("secureTestPass123", "spring.datasource.password"))
