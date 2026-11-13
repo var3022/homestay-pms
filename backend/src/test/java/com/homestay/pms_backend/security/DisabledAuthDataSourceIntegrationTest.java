@@ -46,6 +46,8 @@ class DisabledAuthDataSourceIntegrationTest {
         assertThat(context.containsBean("authJdbcTemplate")).isFalse();
         assertThat(context.containsBean("authTransactionManager")).isFalse();
         assertThat(context.containsBean("authTransactionTemplate")).isFalse();
+        assertThat(context.containsBean("staffIdentityLookup")).isFalse();
+        assertThat(context.containsBean("staffAuthenticationService")).isFalse();
 
         // Core domain functionality continues using pms_app
         String currentUser = jdbcTemplate.queryForObject("SELECT current_user", String.class);
