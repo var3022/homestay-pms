@@ -1,4 +1,4 @@
-﻿package com.homestay.pms_backend.config;
+package com.homestay.pms_backend.config;
 
 import com.homestay.pms_backend.security.jwt.JwtProperties;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;

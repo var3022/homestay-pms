@@ -1,4 +1,4 @@
-﻿package com.homestay.pms_backend.security.jwt;
+package com.homestay.pms_backend.security.jwt;
 
 import com.homestay.pms_backend.security.AuthenticatedStaff;
 

@@ -1,4 +1,4 @@
-﻿package com.homestay.pms_backend.security.jwt;
+package com.homestay.pms_backend.security.jwt;
 
 import io.jsonwebtoken.security.Keys;
 import jakarta.annotation.PostConstruct;
