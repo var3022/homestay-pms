@@ -1,5 +1,6 @@
 package com.homestay.pms_backend.security.jwt;
 
+import com.homestay.pms_backend.security.AuthenticatedStaffPrincipal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,6 +14,7 @@ import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -54,7 +56,7 @@ public class StaffAuthenticationStateValidator {
     private static final Logger log = LoggerFactory.getLogger(StaffAuthenticationStateValidator.class);
 
     private static final String SELECT_ACCOUNT_STATE = """
-            SELECT is_active, is_locked, lockout_until, password_changed_at
+            SELECT id, email, first_name, last_name, is_active, is_locked, lockout_until, password_changed_at
             FROM staff_users
             WHERE id = ?
             """;
@@ -98,6 +100,42 @@ public class StaffAuthenticationStateValidator {
             return false;
         }
 
+        return validateAccountRow(staffUserId, tokenIssuedAt, row);
+    }
+
+    /**
+     * Revalidates staff account state and constructs verified AuthenticatedStaffPrincipal.
+     * Returns empty if staff is missing, inactive, locked, or credentials were changed.
+     *
+     * @param staffUserId   ID of the staff user
+     * @param tokenIssuedAt Issued-at timestamp of the access token
+     * @return Optional containing AuthenticatedStaffPrincipal if valid, empty otherwise
+     */
+    public Optional<AuthenticatedStaffPrincipal> validateAndGetPrincipal(UUID staffUserId, Instant tokenIssuedAt) {
+        if (staffUserId == null || tokenIssuedAt == null) {
+            return Optional.empty();
+        }
+
+        Map<String, Object> row;
+        try {
+            row = authJdbcTemplate.queryForMap(SELECT_ACCOUNT_STATE, staffUserId);
+        } catch (EmptyResultDataAccessException e) {
+            log.warn("Staff account [{}] does not exist in database. Access token rejected.", staffUserId);
+            return Optional.empty();
+        }
+
+        if (!validateAccountRow(staffUserId, tokenIssuedAt, row)) {
+            return Optional.empty();
+        }
+
+        String email = (String) row.get("email");
+        String firstName = (String) row.get("first_name");
+        String lastName = (String) row.get("last_name");
+
+        return Optional.of(new AuthenticatedStaffPrincipal(staffUserId, email, firstName, lastName));
+    }
+
+    private boolean validateAccountRow(UUID staffUserId, Instant tokenIssuedAt, Map<String, Object> row) {
         // Rule 1: Account must be active
         Boolean isActive = (Boolean) row.get("is_active");
         if (!Boolean.TRUE.equals(isActive)) {
