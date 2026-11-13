@@ -2,6 +2,8 @@ package com.homestay.pms_backend.controller;
 
 import com.homestay.pms_backend.dto.request.ReservationRoomAddRequest;
 import com.homestay.pms_backend.dto.response.ReservationRoomResponse;
+import com.homestay.pms_backend.security.authorization.ReservationAuthorizationGuard;
+import com.homestay.pms_backend.security.authorization.StaffOperation;
 import com.homestay.pms_backend.service.ReservationRoomService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -18,10 +20,16 @@ import java.util.UUID;
 public class ReservationRoomController {
 
     private final ReservationRoomService reservationRoomService;
+    private final ReservationAuthorizationGuard reservationAuthorizationGuard;
 
     @PostMapping
     public ResponseEntity<ReservationRoomResponse> addReservationRoom(
             @Valid @RequestBody ReservationRoomAddRequest request) {
+
+        reservationAuthorizationGuard.validateReservationRoomCreation(
+                request.getReservationId(),
+                request.getRoomTypeId()
+        );
 
         return ResponseEntity
                 .status(HttpStatus.CREATED)
@@ -32,6 +40,8 @@ public class ReservationRoomController {
     public ResponseEntity<ReservationRoomResponse> getReservationRoomById(
             @PathVariable UUID id) {
 
+        reservationAuthorizationGuard.requireReservationRoomAccess(id, StaffOperation.RESERVATION_READ);
+
         return ResponseEntity.ok(
                 reservationRoomService.getReservationRoomById(id)
         );
@@ -40,6 +50,8 @@ public class ReservationRoomController {
     @GetMapping
     public ResponseEntity<List<ReservationRoomResponse>> getReservationRooms(
             @RequestParam UUID reservationId) {
+
+        reservationAuthorizationGuard.requireReservationAccess(reservationId, StaffOperation.RESERVATION_READ);
 
         return ResponseEntity.ok(
                 reservationRoomService

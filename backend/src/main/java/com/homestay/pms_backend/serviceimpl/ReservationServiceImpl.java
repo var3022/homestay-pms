@@ -32,6 +32,8 @@ import com.homestay.pms_backend.enums.RoomStatus;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -114,6 +116,28 @@ public class ReservationServiceImpl implements ReservationService {
     public List<ReservationResponse> getAllReservations() {
 
         return reservationRepository.findAll()
+                .stream()
+                .map(reservationMapper::toResponse)
+                .toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<ReservationResponse> getReservationsByPropertyId(UUID propertyId) {
+        validateProperty(propertyId);
+        return reservationRepository.findByPropertyId(propertyId)
+                .stream()
+                .map(reservationMapper::toResponse)
+                .toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<ReservationResponse> getReservationsByPropertyIds(Collection<UUID> propertyIds) {
+        if (propertyIds == null || propertyIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return reservationRepository.findByPropertyIdIn(propertyIds)
                 .stream()
                 .map(reservationMapper::toResponse)
                 .toList();

@@ -3,6 +3,8 @@ package com.homestay.pms_backend.controller;
 import com.homestay.pms_backend.dto.request.ReservationCreateRequest;
 import com.homestay.pms_backend.dto.request.ReservationUpdateRequest;
 import com.homestay.pms_backend.dto.response.ReservationResponse;
+import com.homestay.pms_backend.security.authorization.ReservationAuthorizationGuard;
+import com.homestay.pms_backend.security.authorization.StaffOperation;
 import com.homestay.pms_backend.service.ReservationService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -10,7 +12,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 @RestController
@@ -19,10 +23,13 @@ import java.util.UUID;
 public class ReservationController {
 
     private final ReservationService reservationService;
+    private final ReservationAuthorizationGuard reservationAuthorizationGuard;
 
     @PostMapping
     public ResponseEntity<ReservationResponse> createReservation(
             @Valid @RequestBody ReservationCreateRequest request) {
+
+        reservationAuthorizationGuard.validateReservationCreation(request.getPropertyId());
 
         ReservationResponse response =
                 reservationService.createReservation(request);
@@ -36,21 +43,42 @@ public class ReservationController {
     public ResponseEntity<ReservationResponse> getReservationById(
             @PathVariable UUID id) {
 
+        reservationAuthorizationGuard.requireReservationAccess(id, StaffOperation.RESERVATION_READ);
+
         return ResponseEntity.ok(
                 reservationService.getReservationById(id));
     }
 
     @GetMapping
-    public ResponseEntity<List<ReservationResponse>> getAllReservations() {
+    public ResponseEntity<List<ReservationResponse>> getReservations(
+            @RequestParam(required = false) UUID propertyId) {
+
+        if (propertyId != null) {
+            reservationAuthorizationGuard.requirePropertyExistenceAndAccess(propertyId, StaffOperation.RESERVATION_READ);
+            return ResponseEntity.ok(
+                    reservationService.getReservationsByPropertyId(propertyId));
+        }
+
+        if (!reservationAuthorizationGuard.isEnforcementEnabled() || reservationAuthorizationGuard.isGlobalSuperAdmin()) {
+            return ResponseEntity.ok(
+                    reservationService.getAllReservations());
+        }
+
+        Set<UUID> authorizedPropertyIds = reservationAuthorizationGuard.getAuthorizedPropertyIds(StaffOperation.RESERVATION_READ);
+        if (authorizedPropertyIds.isEmpty()) {
+            return ResponseEntity.ok(Collections.emptyList());
+        }
 
         return ResponseEntity.ok(
-                reservationService.getAllReservations());
+                reservationService.getReservationsByPropertyIds(authorizedPropertyIds));
     }
 
     @PutMapping("/{id}")
     public ResponseEntity<ReservationResponse> updateReservation(
             @PathVariable UUID id,
             @Valid @RequestBody ReservationUpdateRequest request) {
+
+        reservationAuthorizationGuard.requireReservationAccess(id, StaffOperation.RESERVATION_MANAGE);
 
         return ResponseEntity.ok(
                 reservationService.updateReservation(id, request));
@@ -59,6 +87,8 @@ public class ReservationController {
     @PatchMapping("/{id}/cancel")
     public ResponseEntity<ReservationResponse> cancelReservation(
             @PathVariable UUID id) {
+
+        reservationAuthorizationGuard.requireReservationAccess(id, StaffOperation.RESERVATION_MANAGE);
 
         return ResponseEntity.ok(
                 reservationService.cancelReservation(id)

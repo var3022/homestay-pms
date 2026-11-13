@@ -65,14 +65,27 @@ public enum StaffOperation {
     )),
 
     /**
-     * Read reservation schedules, statuses, and assigned rooms.
+     * Read full reservation details, financial pricing, nightly rates, subtotals, external booking IDs,
+     * and special requests across reservations and reservation rooms.
+     *
+     * Authorized roles:
+     * - SUPER_ADMIN (global authority)
+     * - PROPERTY_ADMIN (property-scoped administrative authority)
+     * - RECEPTIONIST (property-scoped front desk operational authority)
+     * - ACCOUNTANT (property-scoped financial and operational reconciliation)
+     *
+     * Privacy & Security Constraints:
+     * - VIEWER is strictly excluded from full reservation and reservation-room reads because complete
+     *   responses expose sensitive guest and financial details (nightly rates, subtotals, booking references,
+     *   special requests).
+     * - Sanitized booking-calendar summary responses for VIEWER can be introduced in a future step
+     *   with a distinct operation and restricted DTO.
      */
     RESERVATION_READ(Set.of(
             StaffRole.SUPER_ADMIN,
             StaffRole.PROPERTY_ADMIN,
             StaffRole.RECEPTIONIST,
-            StaffRole.ACCOUNTANT,
-            StaffRole.VIEWER
+            StaffRole.ACCOUNTANT
     )),
 
     /**

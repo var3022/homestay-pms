@@ -323,7 +323,7 @@ class StaffAuthorizationIntegrationTest {
     // =========================================================================
 
     @Test
-    @DisplayName("VIEWER is authorized for operational reads but DENIED full guest details and all state mutations")
+    @DisplayName("VIEWER is authorized for property/room reads but DENIED reservation reads, full guest details and all mutations")
     void shouldAuthorizeViewerReadOnlyAndDenyAllWrites() {
         String email = "viewer" + TEST_DOMAIN;
         UUID viewerId = createTestStaff(email, true, false);
@@ -334,7 +334,9 @@ class StaffAuthorizationIntegrationTest {
         // Allowed operational reads
         assertThat(authorizationService.hasPropertyAccess(propertyLaVivante, StaffOperation.PROPERTY_READ)).isTrue();
         assertThat(authorizationService.hasPropertyAccess(propertyLaVivante, StaffOperation.ROOM_READ)).isTrue();
-        assertThat(authorizationService.hasPropertyAccess(propertyLaVivante, StaffOperation.RESERVATION_READ)).isTrue();
+
+        // Strictly DENIED full reservation reads (protects nightly rates, pricing, subtotals, special requests)
+        assertThat(authorizationService.hasPropertyAccess(propertyLaVivante, StaffOperation.RESERVATION_READ)).isFalse();
 
         // Strictly DENIED full guest details (protects sensitive PII and ID documents)
         assertThat(authorizationService.hasPropertyAccess(propertyLaVivante, StaffOperation.GUEST_READ)).isFalse();
@@ -345,6 +347,17 @@ class StaffAuthorizationIntegrationTest {
         assertThat(authorizationService.hasPropertyAccess(propertyLaVivante, StaffOperation.ROOM_STATUS_UPDATE)).isFalse();
         assertThat(authorizationService.hasPropertyAccess(propertyLaVivante, StaffOperation.RESERVATION_MANAGE)).isFalse();
         assertThat(authorizationService.hasPropertyAccess(propertyLaVivante, StaffOperation.GUEST_MANAGE)).isFalse();
+    }
+
+    @Test
+    @DisplayName("Reservation Privacy Enforcement: VIEWER is strictly DENIED full reservation reads")
+    void shouldDenyViewerAccessToReservationRead() {
+        String viewerEmail = "v_res_privacy" + TEST_DOMAIN;
+        UUID viewerId = createTestStaff(viewerEmail, true, false);
+        assignPropertyRole(viewerId, propertyLaVivante, StaffRole.VIEWER);
+
+        authenticateStaff(viewerId, viewerEmail);
+        assertThat(authorizationService.hasPropertyAccess(propertyLaVivante, StaffOperation.RESERVATION_READ)).isFalse();
     }
 
     @Test

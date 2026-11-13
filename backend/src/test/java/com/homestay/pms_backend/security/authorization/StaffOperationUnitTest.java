@@ -64,14 +64,14 @@ class StaffOperationUnitTest {
     }
 
     @Test
-    @DisplayName("RESERVATION_READ authorizes all five staff roles")
+    @DisplayName("RESERVATION_READ authorizes SUPER_ADMIN, PROPERTY_ADMIN, RECEPTIONIST, and ACCOUNTANT; strictly denies VIEWER")
     void reservationReadAuthorizations() {
         StaffOperation op = StaffOperation.RESERVATION_READ;
         assertThat(op.isAuthorized(StaffRole.SUPER_ADMIN)).isTrue();
         assertThat(op.isAuthorized(StaffRole.PROPERTY_ADMIN)).isTrue();
         assertThat(op.isAuthorized(StaffRole.RECEPTIONIST)).isTrue();
         assertThat(op.isAuthorized(StaffRole.ACCOUNTANT)).isTrue();
-        assertThat(op.isAuthorized(StaffRole.VIEWER)).isTrue();
+        assertThat(op.isAuthorized(StaffRole.VIEWER)).isFalse();
     }
 
     @Test
@@ -140,6 +140,12 @@ class StaffOperationUnitTest {
     @DisplayName("Guest Privacy Constraint: VIEWER must never access GUEST_READ")
     void viewerNeverAccessesGuestRead() {
         assertThat(StaffOperation.GUEST_READ.isAuthorized(StaffRole.VIEWER)).isFalse();
+    }
+
+    @Test
+    @DisplayName("Reservation Privacy Constraint: VIEWER must never access RESERVATION_READ")
+    void viewerNeverAccessesReservationRead() {
+        assertThat(StaffOperation.RESERVATION_READ.isAuthorized(StaffRole.VIEWER)).isFalse();
     }
 
     @Test
