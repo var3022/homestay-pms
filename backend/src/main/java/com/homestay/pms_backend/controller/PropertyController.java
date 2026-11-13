@@ -3,6 +3,8 @@ package com.homestay.pms_backend.controller;
 import com.homestay.pms_backend.dto.request.PropertyCreateRequest;
 import com.homestay.pms_backend.dto.request.PropertyUpdateRequest;
 import com.homestay.pms_backend.dto.response.PropertyResponse;
+import com.homestay.pms_backend.security.authorization.PropertyAuthorizationGuard;
+import com.homestay.pms_backend.security.authorization.StaffOperation;
 import com.homestay.pms_backend.service.PropertyService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -19,10 +21,13 @@ import java.util.UUID;
 public class PropertyController {
 
     private final PropertyService propertyService;
+    private final PropertyAuthorizationGuard propertyAuthorizationGuard;
 
     @PostMapping
     public ResponseEntity<PropertyResponse> createProperty(
             @Valid @RequestBody PropertyCreateRequest request) {
+
+        propertyAuthorizationGuard.requireGlobalSuperAdmin();
 
         PropertyResponse response = propertyService.createProperty(request);
 
@@ -33,6 +38,8 @@ public class PropertyController {
     public ResponseEntity<PropertyResponse> getPropertyById(
             @PathVariable UUID id) {
 
+        propertyAuthorizationGuard.requirePropertyExistenceAndAccess(id, StaffOperation.PROPERTY_READ);
+
         PropertyResponse response = propertyService.getPropertyById(id);
 
         return ResponseEntity.ok(response);
@@ -41,7 +48,9 @@ public class PropertyController {
     @GetMapping
     public ResponseEntity<List<PropertyResponse>> getAllProperties() {
 
-        List<PropertyResponse> response = propertyService.getAllProperties();
+        List<PropertyResponse> response = propertyAuthorizationGuard.filterAuthorizedProperties(
+                propertyService.getAllProperties()
+        );
 
         return ResponseEntity.ok(response);
     }
@@ -50,6 +59,8 @@ public class PropertyController {
     public ResponseEntity<PropertyResponse> updateProperty(
             @PathVariable UUID id,
             @Valid @RequestBody PropertyUpdateRequest request) {
+
+        propertyAuthorizationGuard.requirePropertyExistenceAndAccess(id, StaffOperation.PROPERTY_MANAGE);
 
         PropertyResponse response =
                 propertyService.updateProperty(id, request);
@@ -61,6 +72,8 @@ public class PropertyController {
     public ResponseEntity<Void> deactivateProperty(
             @PathVariable UUID id) {
 
+        propertyAuthorizationGuard.requirePropertyExistenceAndSuperAdmin(id);
+
         propertyService.deactivateProperty(id);
 
         return ResponseEntity.noContent().build();
@@ -68,6 +81,9 @@ public class PropertyController {
 
     @PatchMapping("/{id}/activate")
     public ResponseEntity<Void> activateProperty(@PathVariable UUID id) {
+
+        propertyAuthorizationGuard.requirePropertyExistenceAndSuperAdmin(id);
+
         propertyService.activateProperty(id);
         return ResponseEntity.noContent().build();
     }

@@ -4,6 +4,8 @@ import com.homestay.pms_backend.dto.request.RoomCreateRequest;
 import com.homestay.pms_backend.dto.request.RoomStatusUpdateRequest;
 import com.homestay.pms_backend.dto.request.RoomUpdateRequest;
 import com.homestay.pms_backend.dto.response.RoomResponse;
+import com.homestay.pms_backend.security.authorization.PropertyAuthorizationGuard;
+import com.homestay.pms_backend.security.authorization.StaffOperation;
 import com.homestay.pms_backend.service.RoomService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -21,10 +23,13 @@ import java.util.UUID;
 public class RoomController {
 
     private final RoomService roomService;
+    private final PropertyAuthorizationGuard propertyAuthorizationGuard;
 
     @PostMapping
     public ResponseEntity<RoomResponse> createRoom(
             @Valid @RequestBody RoomCreateRequest request) {
+
+        propertyAuthorizationGuard.validateRoomCreation(request.getPropertyId(), request.getRoomTypeId());
 
         RoomResponse response =
                 roomService.createRoom(request);
@@ -38,6 +43,8 @@ public class RoomController {
     public ResponseEntity<RoomResponse> getRoomById(
             @PathVariable UUID id) {
 
+        propertyAuthorizationGuard.requireRoomAccess(id, StaffOperation.ROOM_READ);
+
         RoomResponse response =
                 roomService.getRoomById(id);
 
@@ -49,13 +56,22 @@ public class RoomController {
             @RequestParam(required = false) UUID propertyId,
             @RequestParam(required = false) UUID roomTypeId) {
 
+        if (propertyId != null && roomTypeId != null) {
+            propertyAuthorizationGuard.validateRoomQuery(propertyId, roomTypeId);
+            return ResponseEntity.ok(
+                    roomService.getRoomsByRoomTypeId(roomTypeId)
+            );
+        }
+
         if (propertyId != null) {
+            propertyAuthorizationGuard.requirePropertyExistenceAndAccess(propertyId, StaffOperation.ROOM_READ);
             return ResponseEntity.ok(
                     roomService.getRoomsByPropertyId(propertyId)
             );
         }
 
         if (roomTypeId != null) {
+            propertyAuthorizationGuard.requireRoomTypeAccess(roomTypeId, StaffOperation.ROOM_READ);
             return ResponseEntity.ok(
                     roomService.getRoomsByRoomTypeId(roomTypeId)
             );
@@ -71,6 +87,8 @@ public class RoomController {
             @PathVariable UUID id,
             @Valid @RequestBody RoomUpdateRequest request) {
 
+        propertyAuthorizationGuard.requireRoomAccess(id, StaffOperation.ROOM_MANAGE);
+
         RoomResponse response =
                 roomService.updateRoom(id, request);
 
@@ -81,6 +99,8 @@ public class RoomController {
     public ResponseEntity<Void> activateRoom(
             @PathVariable UUID id) {
 
+        propertyAuthorizationGuard.requireRoomAccess(id, StaffOperation.ROOM_MANAGE);
+
         roomService.activateRoom(id);
 
         return ResponseEntity.noContent().build();
@@ -89,6 +109,8 @@ public class RoomController {
     @PatchMapping("/{id}/deactivate")
     public ResponseEntity<Void> deactivateRoom(
             @PathVariable UUID id) {
+
+        propertyAuthorizationGuard.requireRoomAccess(id, StaffOperation.ROOM_MANAGE);
 
         roomService.deactivateRoom(id);
 
@@ -99,6 +121,9 @@ public class RoomController {
     public ResponseEntity<RoomResponse> updateRoomStatus(
             @PathVariable UUID id,
             @Valid @RequestBody RoomStatusUpdateRequest request) {
+
+        propertyAuthorizationGuard.requireRoomAccess(id, StaffOperation.ROOM_STATUS_UPDATE);
+
         return ResponseEntity.ok(
                 roomService.updateRoomStatus(id, request)
         );

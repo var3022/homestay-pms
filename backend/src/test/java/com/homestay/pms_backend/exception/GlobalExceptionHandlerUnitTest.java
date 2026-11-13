@@ -122,4 +122,21 @@ class GlobalExceptionHandlerUnitTest {
         assertThat(response.getBody().error()).isEqualTo("Business Validation Failed");
         assertThat(response.getBody().message()).isEqualTo("Check-out date must be after check-in date");
     }
+
+    @Test
+    @DisplayName("AccessDeniedException returns HTTP 403 with standardized message and no-store cache headers")
+    void shouldHandleAccessDeniedException() {
+        org.springframework.security.access.AccessDeniedException ex =
+                new org.springframework.security.access.AccessDeniedException("Access is denied.");
+
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response = exceptionHandler.handleAccessDenied(ex);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(response.getHeaders().getFirst(HttpHeaders.CACHE_CONTROL)).isEqualTo("no-store");
+        assertThat(response.getHeaders().getFirst(HttpHeaders.PRAGMA)).isEqualTo("no-cache");
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().status()).isEqualTo(403);
+        assertThat(response.getBody().error()).isEqualTo("Forbidden");
+        assertThat(response.getBody().message()).isEqualTo("Access is denied.");
+    }
 }

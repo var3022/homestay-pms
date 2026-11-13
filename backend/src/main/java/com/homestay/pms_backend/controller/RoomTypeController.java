@@ -3,6 +3,8 @@ package com.homestay.pms_backend.controller;
 import com.homestay.pms_backend.dto.request.RoomTypeCreateRequest;
 import com.homestay.pms_backend.dto.request.RoomTypeUpdateRequest;
 import com.homestay.pms_backend.dto.response.RoomTypeResponse;
+import com.homestay.pms_backend.security.authorization.PropertyAuthorizationGuard;
+import com.homestay.pms_backend.security.authorization.StaffOperation;
 import com.homestay.pms_backend.service.RoomTypeService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -19,10 +21,13 @@ import java.util.UUID;
 public class RoomTypeController {
 
     private final RoomTypeService roomTypeService;
+    private final PropertyAuthorizationGuard propertyAuthorizationGuard;
 
     @PostMapping
     public ResponseEntity<RoomTypeResponse> createRoomType(
             @Valid @RequestBody RoomTypeCreateRequest request) {
+
+        propertyAuthorizationGuard.requirePropertyExistenceAndAccess(request.getPropertyId(), StaffOperation.ROOM_MANAGE);
 
         RoomTypeResponse response =
                 roomTypeService.createRoomType(request);
@@ -36,6 +41,8 @@ public class RoomTypeController {
     public ResponseEntity<RoomTypeResponse> getRoomTypeById(
             @PathVariable UUID id) {
 
+        propertyAuthorizationGuard.requireRoomTypeAccess(id, StaffOperation.ROOM_READ);
+
         RoomTypeResponse response =
                 roomTypeService.getRoomTypeById(id);
 
@@ -45,6 +52,8 @@ public class RoomTypeController {
     @GetMapping
     public ResponseEntity<List<RoomTypeResponse>> getRoomTypesByPropertyId(
             @RequestParam UUID propertyId) {
+
+        propertyAuthorizationGuard.requirePropertyExistenceAndAccess(propertyId, StaffOperation.ROOM_READ);
 
         List<RoomTypeResponse> response =
                 roomTypeService.getRoomTypesByPropertyId(propertyId);
@@ -57,6 +66,8 @@ public class RoomTypeController {
             @PathVariable UUID id,
             @Valid @RequestBody RoomTypeUpdateRequest request) {
 
+        propertyAuthorizationGuard.requireRoomTypeAccess(id, StaffOperation.ROOM_MANAGE);
+
         RoomTypeResponse response =
                 roomTypeService.updateRoomType(id, request);
 
@@ -66,6 +77,8 @@ public class RoomTypeController {
     @PatchMapping("/{id}/deactivate")
     public ResponseEntity<Void> deactivateRoomType(
             @PathVariable UUID id) {
+
+        propertyAuthorizationGuard.requireRoomTypeAccess(id, StaffOperation.ROOM_MANAGE);
 
         roomTypeService.deactivateRoomType(id);
 
