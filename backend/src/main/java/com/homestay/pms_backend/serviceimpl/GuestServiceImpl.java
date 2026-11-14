@@ -119,10 +119,10 @@ public class GuestServiceImpl implements GuestService {
 
     @Override
     public GuestResponse updateGuest(UUID id, GuestUpdateRequest request) {
-        authorizationGuard.requireGuestUpdateAccess(id);
-
-        Guest guest = guestRepository.findById(id)
+        Guest guest = guestRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Guest not found with id: " + id));
+
+        authorizationGuard.requireGuestUpdateAccess(id);
 
         if (authorizationGuard.isEnforcementEnabled()) {
             request.setIdDocumentImageKey(null);
@@ -139,7 +139,7 @@ public class GuestServiceImpl implements GuestService {
     public void deactivateGuest(UUID id) {
         authorizationGuard.requireGlobalSuperAdmin("deactivate-guest");
 
-        Guest guest = guestRepository.findById(id)
+        Guest guest = guestRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Guest not found with id: " + id));
 
         guest.setActive(false);
@@ -150,7 +150,7 @@ public class GuestServiceImpl implements GuestService {
     public void activateGuest(UUID id) {
         authorizationGuard.requireGlobalSuperAdmin("activate-guest");
 
-        Guest guest = guestRepository.findById(id)
+        Guest guest = guestRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Guest not found with id: " + id));
 
         guest.setActive(true);

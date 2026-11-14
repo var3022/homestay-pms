@@ -67,9 +67,9 @@ public class GuestPropertyAssociationServiceImpl implements GuestPropertyAssocia
         if (propertyId == null) {
             throw new BusinessValidationException("propertyId must not be null");
         }
-        if (!guestRepository.existsById(guestId)) {
-            throw new ResourceNotFoundException("Guest not found with id: " + guestId);
-        }
+
+        guestRepository.findByIdForUpdate(guestId)
+                .orElseThrow(() -> new ResourceNotFoundException("Guest not found with id: " + guestId));
         if (!propertyRepository.existsById(propertyId)) {
             throw new ResourceNotFoundException("Property not found with id: " + propertyId);
         }
@@ -177,9 +177,8 @@ public class GuestPropertyAssociationServiceImpl implements GuestPropertyAssocia
             throw new BusinessValidationException("association source must not be null");
         }
 
-        if (!guestRepository.existsById(guestId)) {
-            throw new ResourceNotFoundException("Guest not found with id: " + guestId);
-        }
+        guestRepository.findByIdForUpdate(guestId)
+                .orElseThrow(() -> new ResourceNotFoundException("Guest not found with id: " + guestId));
         if (!propertyRepository.existsById(propertyId)) {
             throw new ResourceNotFoundException("Property not found with id: " + propertyId);
         }

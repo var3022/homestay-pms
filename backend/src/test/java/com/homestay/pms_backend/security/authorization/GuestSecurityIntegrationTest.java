@@ -574,12 +574,24 @@ class GuestSecurityIntegrationTest {
     }
 
     @Test
-    @DisplayName("13. Bounded pagination prevents unlimited PII export")
+    @DisplayName("13. Bounded pagination prevents unlimited PII export and handles invalid parameters")
     void test13_boundedPaginationPreventsUnlimitedPiiExport() throws Exception {
         mockMvc.perform(get("/api/v1/guests?page=0&size=2")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", hasSize(2)));
+
+        // Negative page and size clamped safely to page=0, size=1
+        mockMvc.perform(get("/api/v1/guests?page=-5&size=-10")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)));
+
+        // Excessively large size clamped safely to max 100
+        mockMvc.perform(get("/api/v1/guests?page=0&size=999999")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()", lessThanOrEqualTo(100)));
     }
 
     // =========================================================================
