@@ -305,5 +305,31 @@ class RolePrivilegeSegregationIntegrationTest {
         assertThat(canInit).isTrue();
         assertThat(canCutover).isTrue();
     }
+
+    @Test
+    @DisplayName("Verify guest_property_associations least-privilege matrix: pms_app has full DML; pms_auth and pms_finance_admin strictly denied")
+    void shouldVerifyGuestPropertyAssociationsPrivilegeMatrix() {
+        Boolean appSelect = jdbcTemplate.queryForObject(
+                "SELECT has_table_privilege('pms_app', 'guest_property_associations', 'SELECT')", Boolean.class);
+        Boolean appInsert = jdbcTemplate.queryForObject(
+                "SELECT has_table_privilege('pms_app', 'guest_property_associations', 'INSERT')", Boolean.class);
+        Boolean appUpdate = jdbcTemplate.queryForObject(
+                "SELECT has_table_privilege('pms_app', 'guest_property_associations', 'UPDATE')", Boolean.class);
+        Boolean appDelete = jdbcTemplate.queryForObject(
+                "SELECT has_table_privilege('pms_app', 'guest_property_associations', 'DELETE')", Boolean.class);
+
+        assertThat(appSelect).isTrue();
+        assertThat(appInsert).isTrue();
+        assertThat(appUpdate).isTrue();
+        assertThat(appDelete).isTrue();
+
+        Boolean authAccess = jdbcTemplate.queryForObject(
+                "SELECT has_table_privilege('pms_auth', 'guest_property_associations', 'SELECT')", Boolean.class);
+        assertThat(authAccess).isFalse();
+
+        Boolean finAdminAccess = jdbcTemplate.queryForObject(
+                "SELECT has_table_privilege('pms_finance_admin', 'guest_property_associations', 'SELECT')", Boolean.class);
+        assertThat(finAdminAccess).isFalse();
+    }
 }
 

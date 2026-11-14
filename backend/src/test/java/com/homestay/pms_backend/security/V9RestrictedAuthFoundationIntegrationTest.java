@@ -86,6 +86,7 @@ class V9RestrictedAuthFoundationIntegrationTest {
         Flyway flyway = Flyway.configure()
                 .dataSource(CLEAN_VALIDATION_DB_URL, ADMIN_USER, ADMIN_PASS)
                 .locations("classpath:db/migration")
+                .target("9")
                 .cleanDisabled(false)
                 .load();
 
@@ -126,6 +127,7 @@ class V9RestrictedAuthFoundationIntegrationTest {
         Flyway v9Flyway = Flyway.configure()
                 .dataSource(CLEAN_VALIDATION_DB_URL, ADMIN_USER, ADMIN_PASS)
                 .locations("classpath:db/migration")
+                .target("9")
                 .cleanDisabled(false)
                 .load();
 

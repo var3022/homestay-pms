@@ -84,4 +84,20 @@ class DatabaseUpgradeCompatibilityTest {
                     .isEqualTo("pms_admin");
         }
     }
+
+    @Test
+    @DisplayName("Verify that guest_property_associations exists, is owned by pms_admin, and has composite PK")
+    void shouldVerifyGuestPropertyAssociationsExistsAndOwnedByPmsAdmin() {
+        String owner = jdbcTemplate.queryForObject(
+                "SELECT tableowner FROM pg_tables WHERE schemaname = 'public' AND tablename = 'guest_property_associations'",
+                String.class
+        );
+        assertThat(owner).isEqualTo("pms_admin");
+
+        Integer pkCount = jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM pg_constraint WHERE conrelid = 'guest_property_associations'::regclass AND contype = 'p'",
+                Integer.class
+        );
+        assertThat(pkCount).isEqualTo(1);
+    }
 }

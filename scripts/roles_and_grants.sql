@@ -72,6 +72,7 @@ DECLARE
         'property_amenities',
         'room_amenities',
         'guests',
+        'guest_property_associations',
         'booking_sources',
         'reservations',
         'reservation_rooms',
@@ -105,6 +106,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
     property_amenities,
     room_amenities,
     guests,
+    guest_property_associations,
     reservations,
     reservation_rooms,
     reservation_guests,
@@ -308,6 +310,7 @@ REVOKE EXECUTE ON FUNCTION fn_update_staff_password(UUID, VARCHAR, VARCHAR) FROM
 REVOKE ALL ON
     properties, room_types, bed_types, rooms, room_beds,
     amenities, property_amenities, room_amenities, guests,
+    guest_property_associations,
     booking_sources, reservations, reservation_rooms,
     reservation_guests, room_assignments
 FROM pms_auth;
@@ -324,6 +327,9 @@ FROM pms_auth;
 -- -----------------------------------------------------------------------------
 -- C. Strict Privilege Denial for pms_finance_admin
 -- -----------------------------------------------------------------------------
+-- Explicit denial on non-financial guest-property association mapping
+REVOKE ALL ON guest_property_associations FROM pms_finance_admin;
+
 REVOKE ALL ON
     staff_users,
     staff_property_roles,
