@@ -43,6 +43,12 @@ public class RoomAssignmentController {
             @RequestParam(required = false) UUID reservationRoomId,
             @RequestParam(required = false) UUID roomId) {
 
+        if (reservationRoomId != null && roomId != null) {
+            throw new BusinessValidationException(
+                    "Cannot provide both reservationRoomId and roomId"
+            );
+        }
+
         if (reservationRoomId != null) {
             return ResponseEntity.ok(
                     roomAssignmentService

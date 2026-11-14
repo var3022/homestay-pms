@@ -16,6 +16,8 @@ import com.homestay.pms_backend.repository.ReservationRepository;
 import com.homestay.pms_backend.repository.ReservationRoomRepository;
 import com.homestay.pms_backend.repository.RoomAssignmentRepository;
 import com.homestay.pms_backend.repository.RoomRepository;
+import com.homestay.pms_backend.security.authorization.RoomAssignmentAuthorizationGuard;
+import com.homestay.pms_backend.security.authorization.StaffOperation;
 import com.homestay.pms_backend.service.RoomAssignmentService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -35,10 +37,16 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
     private final ReservationRoomRepository reservationRoomRepository;
     private final RoomRepository roomRepository;
     private final ReservationRepository reservationRepository;
+    private final RoomAssignmentAuthorizationGuard authorizationGuard;
 
     @Override
     public RoomAssignmentResponse assignRoom(
             RoomAssignmentCreateRequest request) {
+
+        authorizationGuard.validateAssignmentCreation(
+                request.getReservationRoomId(),
+                request.getRoomId()
+        );
 
         ReservationRoom reservationRoom =
                 reservationRoomRepository.findById(
@@ -184,6 +192,8 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
     @Transactional(readOnly = true)
     public RoomAssignmentResponse getRoomAssignmentById(UUID id) {
 
+        authorizationGuard.requireAssignmentAccess(id, StaffOperation.RESERVATION_READ);
+
         RoomAssignment assignment =
                 roomAssignmentRepository.findById(id)
                         .orElseThrow(() ->
@@ -199,6 +209,11 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
     @Transactional(readOnly = true)
     public List<RoomAssignmentResponse>
     getAssignmentsByReservationRoomId(UUID reservationRoomId) {
+
+        authorizationGuard.requireReservationRoomAccess(
+                reservationRoomId,
+                StaffOperation.RESERVATION_READ
+        );
 
         if (!reservationRoomRepository.existsById(reservationRoomId)) {
             throw new ResourceNotFoundException(
@@ -219,6 +234,11 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
     public List<RoomAssignmentResponse>
     getAssignmentsByRoomId(UUID roomId) {
 
+        authorizationGuard.requireRoomAccess(
+                roomId,
+                StaffOperation.RESERVATION_READ
+        );
+
         if (!roomRepository.existsById(roomId)) {
             throw new ResourceNotFoundException(
                     "Room not found with id: " + roomId
@@ -237,6 +257,8 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
 
     @Override
     public RoomAssignmentResponse releaseRoomAssignment(UUID id) {
+
+        authorizationGuard.requireAssignmentAccess(id, StaffOperation.RESERVATION_MANAGE);
 
         RoomAssignment assignment =
                 roomAssignmentRepository.findById(id)
