@@ -126,6 +126,11 @@ public class GuestPropertyAssociationServiceImpl implements GuestPropertyAssocia
 
         int updated = associationRepository.touchLastActivity(guestId, propertyId);
         if (updated == 0) {
+            if (!authorizationGuard.isEnforcementEnabled()) {
+                log.info("Development mode: skipping reservation activity touch for unassociated guest [{}] at property [{}]",
+                        guestId, propertyId);
+                return;
+            }
             log.warn("Recording reservation activity failed: No existing association found for guest [{}] at property [{}]",
                     guestId, propertyId);
             throw new ResourceNotFoundException("Guest is not associated with property: " + propertyId);

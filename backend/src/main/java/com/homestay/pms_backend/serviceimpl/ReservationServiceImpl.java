@@ -10,6 +10,7 @@ import com.homestay.pms_backend.enums.ReservationRoomStatus;
 import com.homestay.pms_backend.enums.ReservationStatus;
 import com.homestay.pms_backend.enums.RoomAssignmentStatus;
 import com.homestay.pms_backend.entity.BookingSource;
+import com.homestay.pms_backend.entity.Guest;
 import com.homestay.pms_backend.exception.BusinessValidationException;
 import com.homestay.pms_backend.exception.DuplicateResourceException;
 import com.homestay.pms_backend.exception.ResourceNotFoundException;
@@ -19,6 +20,7 @@ import com.homestay.pms_backend.repository.BookingSourceRepository;
 import com.homestay.pms_backend.repository.ReservationRepository;
 import com.homestay.pms_backend.repository.GuestRepository;
 import com.homestay.pms_backend.repository.PropertyRepository;
+import com.homestay.pms_backend.service.GuestPropertyAssociationService;
 import com.homestay.pms_backend.service.ReservationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -59,6 +61,7 @@ public class ReservationServiceImpl implements ReservationService {
     private final RoomRepository roomRepository;
     private final RoomTypeRepository roomTypeRepository;
     private final ReservationRoomMapper reservationRoomMapper;
+    private final GuestPropertyAssociationService guestPropertyAssociationService;
 
     @Override
     public ReservationResponse createReservation(
@@ -66,6 +69,8 @@ public class ReservationServiceImpl implements ReservationService {
 
         validateProperty(request.getPropertyId());
         validateGuest(request.getPrimaryGuestId());
+        guestPropertyAssociationService.validateExistingGuestUsableAtProperty(
+                request.getPrimaryGuestId(), request.getPropertyId());
         @SuppressWarnings("unused")
         BookingSource bookingSource =
                 validateBookingSource(request.getBookingSourceId());
@@ -96,6 +101,9 @@ public class ReservationServiceImpl implements ReservationService {
                         .toList();
 
         reservationRoomRepository.saveAll(reservationRoomsToSave);
+
+        guestPropertyAssociationService.recordReservationActivity(
+                request.getPrimaryGuestId(), request.getPropertyId());
 
         return reservationMapper.toResponse(savedReservation);
     }
@@ -384,9 +392,13 @@ public class ReservationServiceImpl implements ReservationService {
 
     private void validateGuest(UUID guestId) {
 
-        guestRepository.findById(guestId)
+        Guest guest = guestRepository.findById(guestId)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Guest not found with id: " + guestId));
+
+        if (!guest.isActive()) {
+            throw new BusinessValidationException("Guest is inactive: " + guestId);
+        }
     }
 
     private BookingSource validateBookingSource(UUID bookingSourceId) {

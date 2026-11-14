@@ -22,6 +22,7 @@ import com.homestay.pms_backend.repository.ReservationRoomRepository;
 import com.homestay.pms_backend.repository.RoomAssignmentRepository;
 import com.homestay.pms_backend.repository.RoomRepository;
 import com.homestay.pms_backend.repository.RoomTypeRepository;
+import com.homestay.pms_backend.service.GuestPropertyAssociationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -68,6 +69,8 @@ class ReservationServiceImplTest {
     private RoomTypeRepository roomTypeRepository;
     @Mock
     private ReservationRoomMapper reservationRoomMapper;
+    @Mock
+    private GuestPropertyAssociationService guestPropertyAssociationService;
 
     @InjectMocks
     private ReservationServiceImpl reservationService;

@@ -18,6 +18,7 @@ import com.homestay.pms_backend.repository.*;
 import com.homestay.pms_backend.security.AuthenticatedStaff;
 import com.homestay.pms_backend.security.jwt.AccessTokenDto;
 import com.homestay.pms_backend.security.jwt.AccessTokenService;
+import com.homestay.pms_backend.service.GuestPropertyAssociationService;
 import com.homestay.pms_backend.service.ReservationService;
 import com.homestay.pms_backend.test.IsolatedDatabaseTest;
 import org.junit.jupiter.api.AfterEach;
@@ -138,6 +139,9 @@ class ReservationSecurityIntegrationTest {
     private RoomAssignmentRepository roomAssignmentRepository;
 
     @Autowired
+    private GuestPropertyAssociationService guestPropertyAssociationService;
+
+    @Autowired
     private Environment environment;
 
     private MockMvc mockMvc;
@@ -207,6 +211,8 @@ class ReservationSecurityIntegrationTest {
         // 4. Seed Guests
         guestId1 = getOrCreateGuest("Guest Alpha", "guest1-res@test.com", "+919876543211");
         guestId2 = getOrCreateGuest("Guest Beta", "guest2-res@test.com", "+919876543212");
+        guestPropertyAssociationService.createRegistrationAssociation(guestId1, propertyIdA);
+        guestPropertyAssociationService.createRegistrationAssociation(guestId2, propertyIdB);
 
         // 5. Lookup Booking Sources
         bookingSourceDirectId = bookingSourceRepository.findByCode("DIRECT")
@@ -257,6 +263,7 @@ class ReservationSecurityIntegrationTest {
                     "DELETE FROM reservations WHERE property_id IN (SELECT id FROM properties WHERE code IN ('PROP_ALPHA_RES', 'PROP_BETA_RES')); " +
                     "DELETE FROM rooms WHERE room_number IN ('A-101-RES', 'B-201-RES'); " +
                     "DELETE FROM room_types WHERE code IN ('RTA_RES', 'RTB_RES'); " +
+                    "DELETE FROM guest_property_associations WHERE guest_id IN (SELECT id FROM guests WHERE email IN ('guest1-res@test.com', 'guest2-res@test.com')); " +
                     "DELETE FROM guests WHERE email IN ('guest1-res@test.com', 'guest2-res@test.com'); " +
                     "DELETE FROM properties WHERE code IN ('PROP_ALPHA_RES', 'PROP_BETA_RES');"
             );

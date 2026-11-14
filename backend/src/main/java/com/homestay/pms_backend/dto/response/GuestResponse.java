@@ -1,5 +1,6 @@
 package com.homestay.pms_backend.dto.response;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.homestay.pms_backend.enums.IdentityDocumentType;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -35,6 +36,7 @@ public class GuestResponse {
 
     private String idNumber;
 
+    @JsonIgnore
     private String idDocumentImageKey;
 
     private boolean active;

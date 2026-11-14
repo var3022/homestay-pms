@@ -64,7 +64,7 @@ public class GuestMapper {
             guest.setIdType(request.getIdType());
         }
 
-        if (request.getIdNumber() != null) {
+        if (request.getIdNumber() != null && !request.getIdNumber().isBlank() && !request.getIdNumber().startsWith("****")) {
             guest.setIdNumber(request.getIdNumber());
         }
 
@@ -86,12 +86,23 @@ public class GuestMapper {
         response.setCountry(guest.getCountry());
         response.setPostalCode(guest.getPostalCode());
         response.setIdType(guest.getIdType());
-        response.setIdNumber(guest.getIdNumber());
-        response.setIdDocumentImageKey(guest.getIdDocumentImageKey());
+        response.setIdNumber(maskIdNumber(guest.getIdNumber()));
+        response.setIdDocumentImageKey(null);
         response.setActive(guest.isActive());
         response.setCreatedAt(guest.getCreatedAt());
         response.setUpdatedAt(guest.getUpdatedAt());
 
         return response;
+    }
+
+    public static String maskIdNumber(String idNumber) {
+        if (idNumber == null || idNumber.isBlank()) {
+            return null;
+        }
+        String trimmed = idNumber.trim();
+        if (trimmed.length() <= 4) {
+            return "****";
+        }
+        return "****" + trimmed.substring(trimmed.length() - 4);
     }
 }

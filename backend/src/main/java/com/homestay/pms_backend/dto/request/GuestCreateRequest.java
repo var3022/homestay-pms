@@ -8,10 +8,14 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.util.UUID;
+
 @Getter
 @Setter
 @NoArgsConstructor
 public class GuestCreateRequest {
+
+    private UUID propertyId;
 
     @NotBlank
     @Size(max = 150)
