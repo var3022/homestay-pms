@@ -6,6 +6,7 @@ import com.homestay.pms_backend.entity.BookingSource;
 import com.homestay.pms_backend.exception.ResourceNotFoundException;
 import com.homestay.pms_backend.mapper.BookingSourceMapper;
 import com.homestay.pms_backend.repository.BookingSourceRepository;
+import com.homestay.pms_backend.security.authorization.GlobalCatalogAuthorizationGuard;
 import com.homestay.pms_backend.service.BookingSourceService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -21,6 +22,7 @@ public class BookingSourceServiceImpl implements BookingSourceService {
 
     private final BookingSourceRepository bookingSourceRepository;
     private final BookingSourceMapper bookingSourceMapper;
+    private final GlobalCatalogAuthorizationGuard authorizationGuard;
 
     @Override
     @Transactional(readOnly = true)
@@ -48,6 +50,8 @@ public class BookingSourceServiceImpl implements BookingSourceService {
             UUID id,
             BookingSourceUpdateRequest request) {
 
+        authorizationGuard.requireGlobalSuperAdminForMutation();
+
         BookingSource bookingSource = bookingSourceRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Booking source not found with id: " + id));
@@ -63,6 +67,8 @@ public class BookingSourceServiceImpl implements BookingSourceService {
     @Override
     public void deactivateBookingSource(UUID id) {
 
+        authorizationGuard.requireGlobalSuperAdminForMutation();
+
         BookingSource bookingSource = bookingSourceRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Booking source not found with id: " + id));
@@ -74,6 +80,8 @@ public class BookingSourceServiceImpl implements BookingSourceService {
 
     @Override
     public void activateBookingSource(UUID id) {
+
+        authorizationGuard.requireGlobalSuperAdminForMutation();
 
         BookingSource bookingSource = bookingSourceRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException(

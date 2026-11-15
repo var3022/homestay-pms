@@ -8,6 +8,7 @@ import com.homestay.pms_backend.exception.DuplicateResourceException;
 import com.homestay.pms_backend.exception.ResourceNotFoundException;
 import com.homestay.pms_backend.mapper.AmenityMapper;
 import com.homestay.pms_backend.repository.AmenityRepository;
+import com.homestay.pms_backend.security.authorization.GlobalCatalogAuthorizationGuard;
 import com.homestay.pms_backend.service.AmenityService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -23,10 +24,13 @@ public class AmenityServiceImpl implements AmenityService {
 
     private final AmenityRepository amenityRepository;
     private final AmenityMapper amenityMapper;
+    private final GlobalCatalogAuthorizationGuard authorizationGuard;
 
     @Override
     public AmenityResponse createAmenity(
             AmenityCreateRequest request) {
+
+        authorizationGuard.requireGlobalSuperAdminForMutation();
 
         validateCodeDoesNotExist(request.getCode());
 
@@ -63,6 +67,8 @@ public class AmenityServiceImpl implements AmenityService {
     public AmenityResponse updateAmenity(
             UUID id,
             AmenityUpdateRequest request) {
+
+        authorizationGuard.requireGlobalSuperAdminForMutation();
 
         Amenity amenity =
                 getAmenityEntity(id);
@@ -102,6 +108,8 @@ public class AmenityServiceImpl implements AmenityService {
     @Override
     public void deactivateAmenity(UUID id) {
 
+        authorizationGuard.requireGlobalSuperAdminForMutation();
+
         Amenity amenity = getAmenityEntity(id);
 
         amenity.setActive(false);
@@ -111,6 +119,8 @@ public class AmenityServiceImpl implements AmenityService {
 
     @Override
     public void activateAmenity(UUID id) {
+
+        authorizationGuard.requireGlobalSuperAdminForMutation();
 
         Amenity amenity = getAmenityEntity(id);
 

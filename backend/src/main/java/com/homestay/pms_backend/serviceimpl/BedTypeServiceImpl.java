@@ -8,6 +8,7 @@ import com.homestay.pms_backend.exception.DuplicateResourceException;
 import com.homestay.pms_backend.exception.ResourceNotFoundException;
 import com.homestay.pms_backend.mapper.BedTypeMapper;
 import com.homestay.pms_backend.repository.BedTypeRepository;
+import com.homestay.pms_backend.security.authorization.GlobalCatalogAuthorizationGuard;
 import com.homestay.pms_backend.service.BedTypeService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -23,10 +24,13 @@ public class BedTypeServiceImpl implements BedTypeService {
 
     private final BedTypeRepository bedTypeRepository;
     private final BedTypeMapper bedTypeMapper;
+    private final GlobalCatalogAuthorizationGuard authorizationGuard;
 
     @Override
     public BedTypeResponse createBedType(
             BedTypeCreateRequest request) {
+
+        authorizationGuard.requireGlobalSuperAdminForMutation();
 
         validateCodeDoesNotExist(request.getCode());
 
@@ -66,6 +70,8 @@ public class BedTypeServiceImpl implements BedTypeService {
     public BedTypeResponse updateBedType(
             UUID id,
             BedTypeUpdateRequest request) {
+
+        authorizationGuard.requireGlobalSuperAdminForMutation();
 
         BedType bedType = bedTypeRepository.findById(id)
                 .orElseThrow(() ->
