@@ -123,7 +123,7 @@ class ReservationServiceImplTest {
     @DisplayName("updateReservation rejects modification of CANCELLED reservations")
     void updateReservation_rejectsCancelledReservation() {
         reservation.setStatus(ReservationStatus.CANCELLED);
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         ReservationUpdateRequest request = new ReservationUpdateRequest();
         request.setAdults(3);
@@ -139,7 +139,7 @@ class ReservationServiceImplTest {
     @DisplayName("updateReservation rejects modification of CHECKED_IN reservations")
     void updateReservation_rejectsCheckedInReservation() {
         reservation.setStatus(ReservationStatus.CHECKED_IN);
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         ReservationUpdateRequest request = new ReservationUpdateRequest();
         request.setCheckOutDate(LocalDate.of(2026, 11, 15));
@@ -155,7 +155,7 @@ class ReservationServiceImplTest {
     @DisplayName("updateReservation rejects modification of CHECKED_OUT reservations")
     void updateReservation_rejectsCheckedOutReservation() {
         reservation.setStatus(ReservationStatus.CHECKED_OUT);
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         ReservationUpdateRequest request = new ReservationUpdateRequest();
         assertThatThrownBy(() -> reservationService.updateReservation(reservationId, request))
@@ -169,7 +169,7 @@ class ReservationServiceImplTest {
     @DisplayName("updateReservation rejects modification of NO_SHOW reservations")
     void updateReservation_rejectsNoShowReservation() {
         reservation.setStatus(ReservationStatus.NO_SHOW);
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         ReservationUpdateRequest request = new ReservationUpdateRequest();
         assertThatThrownBy(() -> reservationService.updateReservation(reservationId, request))
@@ -183,7 +183,7 @@ class ReservationServiceImplTest {
     @DisplayName("updateReservation rejects OTA bookings via generic update endpoint")
     void updateReservation_rejectsOtaReservation() {
         reservation.setBookingSourceId(otaSource.getId());
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(bookingSourceRepository.findById(otaSource.getId())).thenReturn(Optional.of(otaSource));
 
         ReservationUpdateRequest request = new ReservationUpdateRequest();
@@ -199,7 +199,7 @@ class ReservationServiceImplTest {
     @Test
     @DisplayName("updateReservation rejects checkout date on or before checkin date")
     void updateReservation_rejectsInvalidDates_checkOutBeforeCheckIn() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
 
         ReservationUpdateRequest request = new ReservationUpdateRequest();
@@ -216,7 +216,7 @@ class ReservationServiceImplTest {
     @Test
     @DisplayName("updateReservation extending checkout rejects when assignment still ends on the old checkout date")
     void updateReservation_extendingCheckout_rejectsWhenAssignmentEndsOnOldCheckoutDate() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
 
         ReservationRoom rr = new ReservationRoom();
@@ -226,7 +226,7 @@ class ReservationServiceImplTest {
         rr.setQuantity(1);
         rr.setCancelledQuantity(0);
 
-        when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of(rr));
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
 
         RoomAssignment assignment = new RoomAssignment();
         assignment.setId(UUID.randomUUID());
@@ -252,7 +252,7 @@ class ReservationServiceImplTest {
     @Test
     @DisplayName("updateReservation moving check-in earlier rejects when existing assignment starts after new check-in date")
     void updateReservation_movingCheckInEarlier_rejectsWhenAssignmentStartsAfterNewCheckInDate() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
 
         ReservationRoom rr = new ReservationRoom();
@@ -262,7 +262,7 @@ class ReservationServiceImplTest {
         rr.setQuantity(1);
         rr.setCancelledQuantity(0);
 
-        when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of(rr));
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
 
         RoomAssignment assignment = new RoomAssignment();
         assignment.setId(UUID.randomUUID());
@@ -291,7 +291,7 @@ class ReservationServiceImplTest {
         reservation.setCheckInDate(LocalDate.of(2026, 11, 10));
         reservation.setCheckOutDate(LocalDate.of(2026, 11, 15));
 
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
 
         ReservationRoom rr = new ReservationRoom();
@@ -301,7 +301,7 @@ class ReservationServiceImplTest {
         rr.setQuantity(1);
         rr.setCancelledQuantity(0);
 
-        when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of(rr));
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
 
         RoomAssignment assignment = new RoomAssignment();
         assignment.setId(UUID.randomUUID());
@@ -327,7 +327,7 @@ class ReservationServiceImplTest {
     @Test
     @DisplayName("updateReservation date change succeeds when no active physical assignments exist and inventory is available")
     void updateReservation_dateChange_succeedsWithNoActivePhysicalAssignments() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
 
         ReservationRoom rr = new ReservationRoom();
@@ -337,7 +337,7 @@ class ReservationServiceImplTest {
         rr.setQuantity(1);
         rr.setCancelledQuantity(0);
 
-        when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of(rr));
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
         // No physical assignments exist
         when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of());
         when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
@@ -367,7 +367,7 @@ class ReservationServiceImplTest {
     @Test
     @DisplayName("updateReservation date change rejects when room-type inventory is insufficient for changed dates")
     void updateReservation_dateChange_rejectsWhenInventoryIsInsufficientOnNewDates() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
 
         ReservationRoom rr = new ReservationRoom();
@@ -377,7 +377,7 @@ class ReservationServiceImplTest {
         rr.setQuantity(2);
         rr.setCancelledQuantity(0);
 
-        when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of(rr));
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
         when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of());
         when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
 
@@ -404,7 +404,7 @@ class ReservationServiceImplTest {
     @Test
     @DisplayName("updateReservation date change succeeds when inventory is available and existing assignments cover complete new stay")
     void updateReservation_dateChange_succeedsWhenInventoryIsAvailableAndAssignmentsValid() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
 
         ReservationRoom rr = new ReservationRoom();
@@ -414,7 +414,7 @@ class ReservationServiceImplTest {
         rr.setQuantity(1);
         rr.setCancelledQuantity(0);
 
-        when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of(rr));
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
 
         RoomAssignment assignment = new RoomAssignment();
         assignment.setId(UUID.randomUUID());
@@ -453,7 +453,7 @@ class ReservationServiceImplTest {
     @Test
     @DisplayName("updateReservation date change ignores CANCELLED ReservationRooms when validating inventory and assignments")
     void updateReservation_dateChange_ignoresCancelledReservationRooms_whenValidatingInventoryAndAssignments() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
 
         // 1. CANCELLED reservation room with remaining quantity = 2 and an active assignment ending on the old checkout date
@@ -490,7 +490,7 @@ class ReservationServiceImplTest {
         activeAssignment.setAssignedUntil(LocalDate.of(2026, 11, 15)); // New checkout date
         activeAssignment.setStatus(RoomAssignmentStatus.ASSIGNED);
 
-        when(reservationRoomRepository.findByReservationId(reservationId))
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId))
                 .thenReturn(List.of(cancelledRr, partiallyCancelledRr));
         lenient().when(roomAssignmentRepository.findByReservationRoomId(cancelledRr.getId()))
                 .thenReturn(List.of(cancelledAssignment));
@@ -527,7 +527,7 @@ class ReservationServiceImplTest {
     @Test
     @DisplayName("updateReservation preserves reservation room quantities and pricing")
     void updateReservation_preservesReservationRoomQuantitiesAndPricing() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
 
         ReservationUpdateRequest request = new ReservationUpdateRequest();
@@ -549,7 +549,7 @@ class ReservationServiceImplTest {
     @Test
     @DisplayName("cancelReservation preserves cancellation and availability-release behavior")
     void cancelReservation_preservesCancellationAndAvailabilityReleaseBehavior() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(bookingSourceRepository.findById(bookingSourceId)).thenReturn(Optional.of(directSource));
 
         ReservationRoom rr = new ReservationRoom();
@@ -561,7 +561,7 @@ class ReservationServiceImplTest {
         rr.setUnitPrice(new BigDecimal("2500.00"));
         rr.setStatus(ReservationRoomStatus.CONFIRMED);
 
-        when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of(rr));
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
 
         RoomAssignment assignment = new RoomAssignment();
         assignment.setId(UUID.randomUUID());

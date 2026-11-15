@@ -19,6 +19,7 @@ import com.homestay.pms_backend.repository.RoomRepository;
 import com.homestay.pms_backend.security.authorization.RoomAssignmentAuthorizationGuard;
 import com.homestay.pms_backend.security.authorization.StaffOperation;
 import com.homestay.pms_backend.service.RoomAssignmentService;
+import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,6 +39,7 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
     private final RoomRepository roomRepository;
     private final ReservationRepository reservationRepository;
     private final RoomAssignmentAuthorizationGuard authorizationGuard;
+    private final EntityManager entityManager;
 
     @Override
     public RoomAssignmentResponse assignRoom(
@@ -48,6 +50,24 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
                 request.getRoomId()
         );
 
+        UUID reservationId = reservationRoomRepository.findReservationIdById(
+                request.getReservationRoomId()
+        ).orElseThrow(() ->
+                new ResourceNotFoundException(
+                        "Reservation room not found with id: "
+                                + request.getReservationRoomId()
+                ));
+
+        Reservation reservation =
+                reservationRepository.findByIdForUpdate(
+                        reservationId
+                ).orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "Reservation not found with id: "
+                                        + reservationId
+                        ));
+        entityManager.refresh(reservation);
+
         ReservationRoom reservationRoom =
                 reservationRoomRepository.findByIdForUpdate(
                         request.getReservationRoomId()
@@ -56,15 +76,7 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
                                 "Reservation room not found with id: "
                                         + request.getReservationRoomId()
                         ));
-
-        Reservation reservation =
-                reservationRepository.findById(
-                        reservationRoom.getReservationId()
-                ).orElseThrow(() ->
-                        new ResourceNotFoundException(
-                                "Reservation not found with id: "
-                                        + reservationRoom.getReservationId()
-                        ));
+        entityManager.refresh(reservationRoom);
 
         if (reservation.getStatus() == ReservationStatus.CANCELLED) {
             throw new BusinessValidationException(
@@ -260,44 +272,64 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
 
         authorizationGuard.requireAssignmentAccess(id, StaffOperation.RESERVATION_MANAGE);
 
+        RoomAssignmentStatus preLockStatus = roomAssignmentRepository.findStatusById(id)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "Room assignment not found with id: " + id
+                        ));
+
+        if (preLockStatus == RoomAssignmentStatus.RELEASED) {
+            throw new BusinessValidationException(
+                    "Room assignment is already released"
+            );
+        }
+
+        UUID reservationRoomId = roomAssignmentRepository.findReservationRoomIdById(id)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "Room assignment not found with id: " + id
+                        ));
+
+        UUID reservationId = reservationRoomRepository.findReservationIdById(reservationRoomId)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "Reservation room not found with id: " + reservationRoomId
+                        ));
+
+        Reservation reservation =
+                reservationRepository.findByIdForUpdate(reservationId)
+                        .orElseThrow(() ->
+                                new ResourceNotFoundException(
+                                        "Reservation not found with id: " + reservationId
+                                ));
+        entityManager.refresh(reservation);
+
+        ReservationRoom reservationRoom =
+                reservationRoomRepository.findByIdForUpdate(reservationRoomId)
+                        .orElseThrow(() ->
+                                new ResourceNotFoundException(
+                                        "Reservation room not found with id: "
+                                                + reservationRoomId
+                                ));
+        entityManager.refresh(reservationRoom);
+
+        RoomAssignmentStatus currentStatus = roomAssignmentRepository.findStatusById(id)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "Room assignment not found with id: " + id
+                        ));
+
+        if (currentStatus == RoomAssignmentStatus.RELEASED) {
+            throw new BusinessValidationException(
+                    "Room assignment is already released"
+            );
+        }
+
         RoomAssignment assignment =
                 roomAssignmentRepository.findById(id)
                         .orElseThrow(() ->
                                 new ResourceNotFoundException(
                                         "Room assignment not found with id: " + id
-                                ));
-
-        if (assignment.getStatus() == RoomAssignmentStatus.RELEASED) {
-            throw new BusinessValidationException(
-                    "Room assignment is already released"
-            );
-        }
-
-        ReservationRoom reservationRoom =
-                reservationRoomRepository.findByIdForUpdate(assignment.getReservationRoomId())
-                        .orElseThrow(() ->
-                                new ResourceNotFoundException(
-                                        "Reservation room not found with id: "
-                                                + assignment.getReservationRoomId()
-                                ));
-
-        // Verify post-lock that the assignment was not released while waiting for the lock
-        RoomAssignmentStatus currentStatus = roomAssignmentRepository.findStatusById(id)
-                .orElse(assignment.getStatus());
-
-        if (currentStatus == RoomAssignmentStatus.RELEASED) {
-            assignment.setStatus(RoomAssignmentStatus.RELEASED);
-            throw new BusinessValidationException(
-                    "Room assignment is already released"
-            );
-        }
-
-        Reservation reservation =
-                reservationRepository.findById(reservationRoom.getReservationId())
-                        .orElseThrow(() ->
-                                new ResourceNotFoundException(
-                                        "Reservation not found with id: "
-                                                + reservationRoom.getReservationId()
                                 ));
 
         if (reservation.getStatus() == ReservationStatus.CHECKED_IN) {

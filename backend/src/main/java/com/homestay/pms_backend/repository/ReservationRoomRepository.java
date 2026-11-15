@@ -21,6 +21,13 @@ public interface ReservationRoomRepository
     @Query("SELECT rr FROM ReservationRoom rr WHERE rr.id = :id")
     Optional<ReservationRoom> findByIdForUpdate(@Param("id") UUID id);
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT rr FROM ReservationRoom rr WHERE rr.reservationId = :reservationId ORDER BY rr.id")
+    List<ReservationRoom> findByReservationIdForUpdate(@Param("reservationId") UUID reservationId);
+
+    @Query("SELECT rr.reservationId FROM ReservationRoom rr WHERE rr.id = :id")
+    Optional<UUID> findReservationIdById(@Param("id") UUID id);
+
     List<ReservationRoom> findByReservationId(UUID reservationId);
 
     List<ReservationRoom> findByRoomTypeId(UUID roomTypeId);

@@ -431,7 +431,8 @@ class RoomAssignmentConcurrencyIntegrationTest {
             try {
                 setupSecurityContext(staffIdAdminA, "propadmin-a" + TEST_DOMAIN);
                 txTemplateA.execute(status -> {
-                    // Step 2: Acquire PESSIMISTIC_WRITE lock
+                    // Step 2: Acquire PESSIMISTIC_WRITE lock according to common lock order (Reservation -> ReservationRoom)
+                    reservationRepository.findByIdForUpdate(resId).orElseThrow();
                     reservationRoomRepository.findByIdForUpdate(resRoomId).orElseThrow();
 
                     // Signal that Tx A now holds the lock on the parent reservation room

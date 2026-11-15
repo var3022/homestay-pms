@@ -156,7 +156,7 @@ public class ReservationServiceImpl implements ReservationService {
             UUID id,
             ReservationUpdateRequest request) {
 
-        Reservation reservation = reservationRepository.findById(id)
+        Reservation reservation = reservationRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Reservation not found with id: " + id));
 
@@ -212,7 +212,9 @@ public class ReservationServiceImpl implements ReservationService {
                 || !targetCheckOutDate.equals(reservation.getCheckOutDate());
 
         if (datesChanged) {
-            validateDateChangeSafety(reservation, targetCheckInDate, targetCheckOutDate);
+            List<ReservationRoom> lockedRooms =
+                    reservationRoomRepository.findByReservationIdForUpdate(reservation.getId());
+            validateDateChangeSafety(reservation, targetCheckInDate, targetCheckOutDate, lockedRooms);
         }
 
         // Apply changes only to eligible direct reservations.
@@ -227,10 +229,8 @@ public class ReservationServiceImpl implements ReservationService {
     private void validateDateChangeSafety(
             Reservation reservation,
             LocalDate targetCheckInDate,
-            LocalDate targetCheckOutDate) {
-
-        List<ReservationRoom> reservationRooms =
-                reservationRoomRepository.findByReservationId(reservation.getId());
+            LocalDate targetCheckOutDate,
+            List<ReservationRoom> reservationRooms) {
 
         // 1. Ensure every active room assignment covers the complete new reservation date range
         for (ReservationRoom rr : reservationRooms) {
@@ -453,7 +453,7 @@ public class ReservationServiceImpl implements ReservationService {
     @Override
     public ReservationResponse cancelReservation(UUID id) {
 
-        Reservation reservation = reservationRepository.findById(id)
+        Reservation reservation = reservationRepository.findByIdForUpdate(id)
                 .orElseThrow(() ->
                         new ResourceNotFoundException(
                                 "Reservation not found with id: " + id
@@ -490,7 +490,7 @@ public class ReservationServiceImpl implements ReservationService {
         }
 
         List<ReservationRoom> reservationRooms =
-                reservationRoomRepository.findByReservationId(id);
+                reservationRoomRepository.findByReservationIdForUpdate(id);
 
         List<ReservationRoom> roomsToSave = new ArrayList<>();
         List<RoomAssignment> assignmentsToSave = new ArrayList<>();
@@ -501,15 +501,13 @@ public class ReservationServiceImpl implements ReservationService {
                         reservationRoom.getQuantity()
                                 - reservationRoom.getCancelledQuantity();
 
-                if (activeQuantity <= 0) {
-                continue;
+                if (activeQuantity > 0) {
+                    reservationRoom.setCancelledQuantity(
+                            reservationRoom.getQuantity()
+                    );
+                    reservationRoom.setStatus(ReservationRoomStatus.CANCELLED);
+                    roomsToSave.add(reservationRoom);
                 }
-
-                reservationRoom.setCancelledQuantity(
-                        reservationRoom.getQuantity()
-                );
-                reservationRoom.setStatus(ReservationRoomStatus.CANCELLED);
-                roomsToSave.add(reservationRoom);
 
                 List<RoomAssignment> assignments =
                         roomAssignmentRepository.findByReservationRoomId(
@@ -517,10 +515,10 @@ public class ReservationServiceImpl implements ReservationService {
                         );
 
                 for (RoomAssignment assignment : assignments) {
-                if (assignment.getStatus() == RoomAssignmentStatus.ASSIGNED) {
+                    if (assignment.getStatus() == RoomAssignmentStatus.ASSIGNED) {
                         assignment.setStatus(RoomAssignmentStatus.RELEASED);
                         assignmentsToSave.add(assignment);
-                }
+                    }
                 }
         }
 

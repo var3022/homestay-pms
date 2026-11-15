@@ -90,7 +90,7 @@ class ReservationRoomServiceImplTest {
     @Test
     @DisplayName("addReservationRoom throws ResourceNotFoundException when reservation does not exist")
     void addReservationRoom_rejectsNonExistentReservation() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.empty());
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> reservationRoomService.addReservationRoom(addRequest))
                 .isInstanceOf(ResourceNotFoundException.class)
@@ -103,7 +103,7 @@ class ReservationRoomServiceImplTest {
     @DisplayName("addReservationRoom rejects adding room to CANCELLED reservation")
     void addReservationRoom_rejectsCancelledReservation() {
         reservation.setStatus(ReservationStatus.CANCELLED);
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         assertThatThrownBy(() -> reservationRoomService.addReservationRoom(addRequest))
                 .isInstanceOf(BusinessValidationException.class)
@@ -116,7 +116,7 @@ class ReservationRoomServiceImplTest {
     @DisplayName("addReservationRoom rejects adding room to CHECKED_IN reservation")
     void addReservationRoom_rejectsCheckedInReservation() {
         reservation.setStatus(ReservationStatus.CHECKED_IN);
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         assertThatThrownBy(() -> reservationRoomService.addReservationRoom(addRequest))
                 .isInstanceOf(BusinessValidationException.class)
@@ -129,7 +129,7 @@ class ReservationRoomServiceImplTest {
     @DisplayName("addReservationRoom rejects adding room to CHECKED_OUT reservation")
     void addReservationRoom_rejectsCheckedOutReservation() {
         reservation.setStatus(ReservationStatus.CHECKED_OUT);
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         assertThatThrownBy(() -> reservationRoomService.addReservationRoom(addRequest))
                 .isInstanceOf(BusinessValidationException.class)
@@ -142,7 +142,7 @@ class ReservationRoomServiceImplTest {
     @DisplayName("addReservationRoom rejects adding room to NO_SHOW reservation")
     void addReservationRoom_rejectsNoShowReservation() {
         reservation.setStatus(ReservationStatus.NO_SHOW);
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         assertThatThrownBy(() -> reservationRoomService.addReservationRoom(addRequest))
                 .isInstanceOf(BusinessValidationException.class)
@@ -154,7 +154,7 @@ class ReservationRoomServiceImplTest {
     @Test
     @DisplayName("addReservationRoom rejects room type from different property")
     void addReservationRoom_rejectsRoomTypeFromDifferentProperty() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         roomType.setPropertyId(UUID.randomUUID()); // different property
         when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
@@ -169,7 +169,7 @@ class ReservationRoomServiceImplTest {
     @Test
     @DisplayName("addReservationRoom rejects inactive room type")
     void addReservationRoom_rejectsInactiveRoomType() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         roomType.setActive(false);
         when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
@@ -184,7 +184,7 @@ class ReservationRoomServiceImplTest {
     @Test
     @DisplayName("addReservationRoom rejects when requested quantity exceeds available inventory")
     void addReservationRoom_rejectsWhenQuantityExceedsAvailableInventory() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
         when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of());
 
@@ -208,7 +208,7 @@ class ReservationRoomServiceImplTest {
     @Test
     @DisplayName("addReservationRoom rejects when total required quantity (existing + requested) exceeds available inventory")
     void addReservationRoom_rejectsWhenTotalRequiredQuantityExceedsInventory() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
 
         // Reservation already has 1 room of this type
@@ -246,7 +246,7 @@ class ReservationRoomServiceImplTest {
     @Test
     @DisplayName("addReservationRoom correctly handles room type already present when sufficient inventory exists")
     void addReservationRoom_succeedsWithExistingRoomType_whenSufficientInventory() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
 
         // Reservation already has 1 active room of this type
@@ -298,7 +298,7 @@ class ReservationRoomServiceImplTest {
     @Test
     @DisplayName("addReservationRoom ignores CANCELLED ReservationRoom records when calculating existing active quantity")
     void addReservationRoom_ignoresCancelledReservationRoomRecords_whenCalculatingExistingActiveQuantity() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
 
         // CANCELLED reservation-room record with quantity = 2 and cancelledQuantity = 0
@@ -350,7 +350,7 @@ class ReservationRoomServiceImplTest {
     @Test
     @DisplayName("addReservationRoom succeeds when inventory is available")
     void addReservationRoom_succeedsWhenInventoryAvailable() {
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
         when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of());
 

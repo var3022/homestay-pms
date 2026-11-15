@@ -37,7 +37,7 @@ public class ReservationRoomServiceImpl implements ReservationRoomService {
     @Override
     public ReservationRoomResponse addReservationRoom(ReservationRoomAddRequest request) {
 
-        Reservation reservation = reservationRepository.findById(request.getReservationId())
+        Reservation reservation = reservationRepository.findByIdForUpdate(request.getReservationId())
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Reservation not found with id: " + request.getReservationId()
                 ));

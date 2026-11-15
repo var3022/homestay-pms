@@ -16,6 +16,7 @@ import com.homestay.pms_backend.repository.ReservationRoomRepository;
 import com.homestay.pms_backend.repository.RoomAssignmentRepository;
 import com.homestay.pms_backend.repository.RoomRepository;
 import com.homestay.pms_backend.security.authorization.RoomAssignmentAuthorizationGuard;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -32,9 +33,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class RoomAssignmentServiceImplTest {
@@ -51,6 +50,8 @@ class RoomAssignmentServiceImplTest {
     private ReservationRepository reservationRepository;
     @Mock
     private RoomAssignmentAuthorizationGuard authorizationGuard;
+    @Mock
+    private EntityManager entityManager;
 
     @InjectMocks
     private RoomAssignmentServiceImpl roomAssignmentService;
@@ -101,6 +102,10 @@ class RoomAssignmentServiceImplTest {
         assignRequest.setRoomId(roomId);
         assignRequest.setAssignedFrom(LocalDate.of(2026, 11, 10));
         assignRequest.setAssignedUntil(LocalDate.of(2026, 11, 12));
+
+        lenient().when(reservationRoomRepository.findReservationIdById(reservationRoomId)).thenReturn(Optional.of(reservationId));
+        lenient().when(roomAssignmentRepository.findReservationRoomIdById(any())).thenReturn(Optional.of(reservationRoomId));
+        lenient().when(roomAssignmentRepository.findStatusById(any())).thenReturn(Optional.of(RoomAssignmentStatus.ASSIGNED));
     }
 
     @Test
@@ -108,7 +113,7 @@ class RoomAssignmentServiceImplTest {
     void assignRoom_rejectsCancelledReservation() {
         reservation.setStatus(ReservationStatus.CANCELLED);
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         assertThatThrownBy(() -> roomAssignmentService.assignRoom(assignRequest))
                 .isInstanceOf(BusinessValidationException.class)
@@ -122,7 +127,7 @@ class RoomAssignmentServiceImplTest {
     void assignRoom_rejectsCheckedOutReservation() {
         reservation.setStatus(ReservationStatus.CHECKED_OUT);
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         assertThatThrownBy(() -> roomAssignmentService.assignRoom(assignRequest))
                 .isInstanceOf(BusinessValidationException.class)
@@ -136,7 +141,7 @@ class RoomAssignmentServiceImplTest {
     void assignRoom_rejectsNoShowReservation() {
         reservation.setStatus(ReservationStatus.NO_SHOW);
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         assertThatThrownBy(() -> roomAssignmentService.assignRoom(assignRequest))
                 .isInstanceOf(BusinessValidationException.class)
@@ -150,7 +155,7 @@ class RoomAssignmentServiceImplTest {
     void assignRoom_rejectsOutOfServiceRoom() {
         room.setStatus(RoomStatus.OUT_OF_SERVICE);
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(roomRepository.findById(roomId)).thenReturn(Optional.of(room));
 
         assertThatThrownBy(() -> roomAssignmentService.assignRoom(assignRequest))
@@ -165,7 +170,7 @@ class RoomAssignmentServiceImplTest {
     void assignRoom_rejectsInactiveRoom() {
         room.setActive(false);
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(roomRepository.findById(roomId)).thenReturn(Optional.of(room));
 
         assertThatThrownBy(() -> roomAssignmentService.assignRoom(assignRequest))
@@ -181,7 +186,7 @@ class RoomAssignmentServiceImplTest {
         // Room status is OCCUPIED (e.g. guest currently staying)
         room.setStatus(RoomStatus.OCCUPIED);
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(roomRepository.findById(roomId)).thenReturn(Optional.of(room));
 
         // No overlapping assignment for the requested future dates Nov 10 - Nov 12
@@ -217,7 +222,7 @@ class RoomAssignmentServiceImplTest {
     @DisplayName("assignRoom rejects when room already has an overlapping ASSIGNED record for the requested dates")
     void assignRoom_rejectsOverlappingAssignment() {
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(roomRepository.findById(roomId)).thenReturn(Optional.of(room));
 
         when(roomAssignmentRepository
@@ -256,7 +261,7 @@ class RoomAssignmentServiceImplTest {
 
         when(roomAssignmentRepository.findById(assignmentId)).thenReturn(Optional.of(assignment));
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         assertThatThrownBy(() -> roomAssignmentService.releaseRoomAssignment(assignmentId))
                 .isInstanceOf(BusinessValidationException.class)
@@ -269,11 +274,7 @@ class RoomAssignmentServiceImplTest {
     @DisplayName("releaseRoomAssignment rejects an assignment that is already RELEASED")
     void releaseRoomAssignment_rejectsAlreadyReleasedAssignment() {
         UUID assignmentId = UUID.randomUUID();
-        RoomAssignment assignment = new RoomAssignment();
-        assignment.setId(assignmentId);
-        assignment.setStatus(RoomAssignmentStatus.RELEASED);
-
-        when(roomAssignmentRepository.findById(assignmentId)).thenReturn(Optional.of(assignment));
+        when(roomAssignmentRepository.findStatusById(assignmentId)).thenReturn(Optional.of(RoomAssignmentStatus.RELEASED));
 
         assertThatThrownBy(() -> roomAssignmentService.releaseRoomAssignment(assignmentId))
                 .isInstanceOf(BusinessValidationException.class)
@@ -286,14 +287,12 @@ class RoomAssignmentServiceImplTest {
     @DisplayName("releaseRoomAssignment rejects when status changed to RELEASED post-lock")
     void releaseRoomAssignment_rejectsWhenStatusChangedToReleasedPostLock() {
         UUID assignmentId = UUID.randomUUID();
-        RoomAssignment assignment = new RoomAssignment();
-        assignment.setId(assignmentId);
-        assignment.setReservationRoomId(reservationRoomId);
-        assignment.setStatus(RoomAssignmentStatus.ASSIGNED);
 
-        when(roomAssignmentRepository.findById(assignmentId)).thenReturn(Optional.of(assignment));
+        when(roomAssignmentRepository.findStatusById(assignmentId))
+                .thenReturn(Optional.of(RoomAssignmentStatus.ASSIGNED))
+                .thenReturn(Optional.of(RoomAssignmentStatus.RELEASED));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
-        when(roomAssignmentRepository.findStatusById(assignmentId)).thenReturn(Optional.of(RoomAssignmentStatus.RELEASED));
 
         assertThatThrownBy(() -> roomAssignmentService.releaseRoomAssignment(assignmentId))
                 .isInstanceOf(BusinessValidationException.class)
@@ -320,7 +319,7 @@ class RoomAssignmentServiceImplTest {
 
         when(roomAssignmentRepository.findById(assignmentId)).thenReturn(Optional.of(assignment));
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         // Only this single assignment exists; after excluding it, 0 remain (< 1 required)
         when(roomAssignmentRepository.findByReservationRoomId(reservationRoomId)).thenReturn(List.of(assignment));
 
@@ -358,7 +357,7 @@ class RoomAssignmentServiceImplTest {
 
         when(roomAssignmentRepository.findById(assignmentId)).thenReturn(Optional.of(assignment1));
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(roomAssignmentRepository.findByReservationRoomId(reservationRoomId)).thenReturn(List.of(assignment1, assignment2));
         when(roomAssignmentRepository.saveAndFlush(assignment1)).thenReturn(assignment1);
 
@@ -401,7 +400,7 @@ class RoomAssignmentServiceImplTest {
 
         when(roomAssignmentRepository.findById(assignment1Id)).thenReturn(Optional.of(assignment1));
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(roomAssignmentRepository.findByReservationRoomId(reservationRoomId)).thenReturn(List.of(assignment1, assignment2));
         when(roomAssignmentRepository.saveAndFlush(assignment1)).thenReturn(assignment1);
 

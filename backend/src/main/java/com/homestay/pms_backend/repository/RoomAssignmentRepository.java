@@ -17,6 +17,9 @@ public interface RoomAssignmentRepository
     @Query("SELECT ra.status FROM RoomAssignment ra WHERE ra.id = :id")
     Optional<RoomAssignmentStatus> findStatusById(@Param("id") UUID id);
 
+    @Query("SELECT ra.reservationRoomId FROM RoomAssignment ra WHERE ra.id = :id")
+    Optional<UUID> findReservationRoomIdById(@Param("id") UUID id);
+
     List<RoomAssignment> findByReservationRoomId(UUID reservationRoomId);
 
     List<RoomAssignment> findByRoomIdAndStatus(
