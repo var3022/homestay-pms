@@ -3,8 +3,10 @@ package com.homestay.pms_backend.serviceimpl;
 import com.homestay.pms_backend.dto.request.ReservationUpdateRequest;
 import com.homestay.pms_backend.dto.response.ReservationResponse;
 import com.homestay.pms_backend.entity.BookingSource;
+import com.homestay.pms_backend.entity.Property;
 import com.homestay.pms_backend.entity.Reservation;
 import com.homestay.pms_backend.entity.ReservationRoom;
+import com.homestay.pms_backend.entity.Room;
 import com.homestay.pms_backend.entity.RoomAssignment;
 import com.homestay.pms_backend.entity.RoomType;
 import com.homestay.pms_backend.enums.ReservationRoomStatus;
@@ -23,6 +25,7 @@ import com.homestay.pms_backend.repository.RoomAssignmentRepository;
 import com.homestay.pms_backend.repository.RoomRepository;
 import com.homestay.pms_backend.repository.RoomTypeRepository;
 import com.homestay.pms_backend.service.GuestPropertyAssociationService;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -32,7 +35,10 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -71,6 +77,10 @@ class ReservationServiceImplTest {
     private ReservationRoomMapper reservationRoomMapper;
     @Mock
     private GuestPropertyAssociationService guestPropertyAssociationService;
+    @Mock
+    private EntityManager entityManager;
+    @Mock
+    private Clock clock;
 
     @InjectMocks
     private ReservationServiceImpl reservationService;
@@ -582,6 +592,279 @@ class ReservationServiceImplTest {
 
         verify(reservationRoomRepository).saveAll(List.of(rr));
         verify(roomAssignmentRepository).saveAll(List.of(assignment));
+        verify(reservationRepository).saveAndFlush(reservation);
+    }
+
+    // =========================================================================
+    // Step 3.4.3.6B: checkInReservation Unit Tests
+    // =========================================================================
+
+    @Test
+    @DisplayName("checkInReservation rejects if reservation is already CHECKED_IN")
+    void checkInReservation_rejectsIfAlreadyCheckedIn() {
+        reservation.setStatus(ReservationStatus.CHECKED_IN);
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        assertThatThrownBy(() -> reservationService.checkInReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Reservation is already checked in");
+    }
+
+    @Test
+    @DisplayName("checkInReservation rejects if reservation is PENDING")
+    void checkInReservation_rejectsIfPending() {
+        reservation.setStatus(ReservationStatus.PENDING);
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        assertThatThrownBy(() -> reservationService.checkInReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Cannot check in reservation from status: PENDING");
+    }
+
+    @Test
+    @DisplayName("checkInReservation rejects if reservation is CANCELLED")
+    void checkInReservation_rejectsIfCancelled() {
+        reservation.setStatus(ReservationStatus.CANCELLED);
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        assertThatThrownBy(() -> reservationService.checkInReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Cannot check in reservation from status: CANCELLED");
+    }
+
+    @Test
+    @DisplayName("checkInReservation rejects if reservation is CHECKED_OUT")
+    void checkInReservation_rejectsIfCheckedOut() {
+        reservation.setStatus(ReservationStatus.CHECKED_OUT);
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        assertThatThrownBy(() -> reservationService.checkInReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Cannot check in reservation from status: CHECKED_OUT");
+    }
+
+    @Test
+    @DisplayName("checkInReservation rejects if reservation is NO_SHOW")
+    void checkInReservation_rejectsIfNoShow() {
+        reservation.setStatus(ReservationStatus.NO_SHOW);
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        assertThatThrownBy(() -> reservationService.checkInReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Cannot check in reservation from status: NO_SHOW");
+    }
+
+    @Test
+    @DisplayName("checkInReservation rejects if property timezone is invalid")
+    void checkInReservation_rejectsIfInvalidTimezone() {
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of());
+
+        Property prop = new Property();
+        prop.setId(propertyId);
+        prop.setTimezone("Invalid/Timezone");
+        when(propertyRepository.findById(propertyId)).thenReturn(Optional.of(prop));
+
+        assertThatThrownBy(() -> reservationService.checkInReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("has an invalid timezone");
+    }
+
+    @Test
+    @DisplayName("checkInReservation rejects early arrival before check-in date")
+    void checkInReservation_rejectsEarlyArrival() {
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of());
+
+        Property prop = new Property();
+        prop.setId(propertyId);
+        prop.setTimezone("Asia/Kolkata");
+        when(propertyRepository.findById(propertyId)).thenReturn(Optional.of(prop));
+
+        // Fixed clock on Nov 09 (checkin is Nov 10)
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-11-09T05:00:00Z"), ZoneId.of("Asia/Kolkata"));
+        when(clock.withZone(any(ZoneId.class))).thenReturn(fixedClock);
+
+        assertThatThrownBy(() -> reservationService.checkInReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Cannot check in before reservation check-in date");
+    }
+
+    @Test
+    @DisplayName("checkInReservation rejects check-in on or after check-out date")
+    void checkInReservation_rejectsCheckOutDateOrLater() {
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of());
+
+        Property prop = new Property();
+        prop.setId(propertyId);
+        prop.setTimezone("Asia/Kolkata");
+        when(propertyRepository.findById(propertyId)).thenReturn(Optional.of(prop));
+
+        // Fixed clock on Nov 12 (checkout is Nov 12)
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-11-12T05:00:00Z"), ZoneId.of("Asia/Kolkata"));
+        when(clock.withZone(any(ZoneId.class))).thenReturn(fixedClock);
+
+        assertThatThrownBy(() -> reservationService.checkInReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Cannot check in on or after reservation check-out date");
+    }
+
+    @Test
+    @DisplayName("checkInReservation rejects if reservation has no active rooms")
+    void checkInReservation_rejectsIfNoActiveRooms() {
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        ReservationRoom cancelledRoom = new ReservationRoom();
+        cancelledRoom.setId(UUID.randomUUID());
+        cancelledRoom.setQuantity(1);
+        cancelledRoom.setCancelledQuantity(1);
+        cancelledRoom.setStatus(ReservationRoomStatus.CANCELLED);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(cancelledRoom));
+
+        Property prop = new Property();
+        prop.setId(propertyId);
+        prop.setTimezone("Asia/Kolkata");
+        when(propertyRepository.findById(propertyId)).thenReturn(Optional.of(prop));
+
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-11-10T05:00:00Z"), ZoneId.of("Asia/Kolkata"));
+        when(clock.withZone(any(ZoneId.class))).thenReturn(fixedClock);
+
+        assertThatThrownBy(() -> reservationService.checkInReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Reservation has no active rooms");
+    }
+
+    @Test
+    @DisplayName("checkInReservation rejects if room assignment coverage is incomplete")
+    void checkInReservation_rejectsIncompleteRoomAssignment() {
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        rr.setCancelledQuantity(0);
+        rr.setStatus(ReservationRoomStatus.CONFIRMED);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
+
+        Property prop = new Property();
+        prop.setId(propertyId);
+        prop.setTimezone("Asia/Kolkata");
+        when(propertyRepository.findById(propertyId)).thenReturn(Optional.of(prop));
+
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-11-10T05:00:00Z"), ZoneId.of("Asia/Kolkata"));
+        when(clock.withZone(any(ZoneId.class))).thenReturn(fixedClock);
+
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of());
+        when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
+
+        assertThatThrownBy(() -> reservationService.checkInReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Incomplete physical room assignment for room type 'Deluxe Room'");
+    }
+
+    @Test
+    @DisplayName("checkInReservation rejects if assigned room is out of service")
+    void checkInReservation_rejectsAssignedRoomOutOfService() {
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        rr.setCancelledQuantity(0);
+        rr.setStatus(ReservationRoomStatus.CONFIRMED);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
+
+        Property prop = new Property();
+        prop.setId(propertyId);
+        prop.setTimezone("Asia/Kolkata");
+        when(propertyRepository.findById(propertyId)).thenReturn(Optional.of(prop));
+
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-11-10T05:00:00Z"), ZoneId.of("Asia/Kolkata"));
+        when(clock.withZone(any(ZoneId.class))).thenReturn(fixedClock);
+
+        UUID roomId = UUID.randomUUID();
+        RoomAssignment assignment = new RoomAssignment();
+        assignment.setId(UUID.randomUUID());
+        assignment.setReservationRoomId(rr.getId());
+        assignment.setRoomId(roomId);
+        assignment.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        assignment.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        assignment.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(assignment));
+
+        Room room = new Room();
+        room.setId(roomId);
+        room.setPropertyId(propertyId);
+        room.setRoomTypeId(roomTypeId);
+        room.setRoomNumber("101");
+        room.setActive(true);
+        room.setStatus(RoomStatus.OUT_OF_SERVICE);
+
+        when(roomRepository.findById(roomId)).thenReturn(Optional.of(room));
+
+        assertThatThrownBy(() -> reservationService.checkInReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("is out of service and cannot be checked in");
+    }
+
+    @Test
+    @DisplayName("checkInReservation succeeds with full coverage, sets OCCUPIED and checkout deadline")
+    void checkInReservation_succeedsWithFullCoverage() {
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        rr.setCancelledQuantity(0);
+        rr.setStatus(ReservationRoomStatus.CONFIRMED);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
+
+        Property prop = new Property();
+        prop.setId(propertyId);
+        prop.setTimezone("Asia/Kolkata");
+        when(propertyRepository.findById(propertyId)).thenReturn(Optional.of(prop));
+
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-11-10T05:00:00Z"), ZoneId.of("Asia/Kolkata"));
+        when(clock.withZone(any(ZoneId.class))).thenReturn(fixedClock);
+
+        UUID roomId = UUID.randomUUID();
+        RoomAssignment assignment = new RoomAssignment();
+        assignment.setId(UUID.randomUUID());
+        assignment.setReservationRoomId(rr.getId());
+        assignment.setRoomId(roomId);
+        assignment.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        assignment.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        assignment.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(assignment));
+
+        Room room = new Room();
+        room.setId(roomId);
+        room.setPropertyId(propertyId);
+        room.setRoomTypeId(roomTypeId);
+        room.setRoomNumber("101");
+        room.setActive(true);
+        room.setStatus(RoomStatus.AVAILABLE);
+
+        when(roomRepository.findById(roomId)).thenReturn(Optional.of(room));
+        when(reservationRepository.saveAndFlush(any(Reservation.class))).thenAnswer(i -> i.getArgument(0));
+        when(reservationMapper.toResponse(any())).thenReturn(new ReservationResponse());
+
+        reservationService.checkInReservation(reservationId);
+
+        assertThat(reservation.getStatus()).isEqualTo(ReservationStatus.CHECKED_IN);
+        assertThat(reservation.isCheckoutDue()).isFalse();
+        assertThat(reservation.getCheckoutDueAt()).isEqualTo(
+                LocalDate.of(2026, 11, 12).atTime(12, 0).atZone(ZoneId.of("Asia/Kolkata")).toInstant()
+        );
+        assertThat(room.getStatus()).isEqualTo(RoomStatus.OCCUPIED);
+
+        verify(roomRepository).saveAll(List.of(room));
         verify(reservationRepository).saveAndFlush(reservation);
     }
 }

@@ -29,10 +29,19 @@ import com.homestay.pms_backend.repository.ReservationRoomRepository;
 import com.homestay.pms_backend.repository.RoomAssignmentRepository;
 import com.homestay.pms_backend.repository.RoomRepository;
 import com.homestay.pms_backend.repository.RoomTypeRepository;
+import com.homestay.pms_backend.entity.Property;
+import com.homestay.pms_backend.entity.Room;
 import com.homestay.pms_backend.entity.RoomType;
 import com.homestay.pms_backend.enums.RoomStatus;
+import jakarta.persistence.EntityManager;
+import org.springframework.beans.factory.annotation.Autowired;
 
+import java.time.Clock;
+import java.time.DateTimeException;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -44,7 +53,6 @@ import java.util.Set;
 import java.util.UUID;
 
 @Service
-@RequiredArgsConstructor
 @Transactional
 public class ReservationServiceImpl implements ReservationService {
 
@@ -62,6 +70,38 @@ public class ReservationServiceImpl implements ReservationService {
     private final RoomTypeRepository roomTypeRepository;
     private final ReservationRoomMapper reservationRoomMapper;
     private final GuestPropertyAssociationService guestPropertyAssociationService;
+    private final EntityManager entityManager;
+    private final Clock clock;
+
+    public ReservationServiceImpl(
+            ReservationRepository reservationRepository,
+            ReservationMapper reservationMapper,
+            PropertyRepository propertyRepository,
+            GuestRepository guestRepository,
+            BookingSourceRepository bookingSourceRepository,
+            ReservationRoomRepository reservationRoomRepository,
+            RoomAssignmentRepository roomAssignmentRepository,
+            RoomRepository roomRepository,
+            RoomTypeRepository roomTypeRepository,
+            ReservationRoomMapper reservationRoomMapper,
+            GuestPropertyAssociationService guestPropertyAssociationService,
+            EntityManager entityManager,
+            @Autowired(required = false) Clock clock
+    ) {
+        this.reservationRepository = reservationRepository;
+        this.reservationMapper = reservationMapper;
+        this.propertyRepository = propertyRepository;
+        this.guestRepository = guestRepository;
+        this.bookingSourceRepository = bookingSourceRepository;
+        this.reservationRoomRepository = reservationRoomRepository;
+        this.roomAssignmentRepository = roomAssignmentRepository;
+        this.roomRepository = roomRepository;
+        this.roomTypeRepository = roomTypeRepository;
+        this.reservationRoomMapper = reservationRoomMapper;
+        this.guestPropertyAssociationService = guestPropertyAssociationService;
+        this.entityManager = entityManager;
+        this.clock = clock != null ? clock : Clock.systemUTC();
+    }
 
     @Override
     public ReservationResponse createReservation(
@@ -529,6 +569,198 @@ public class ReservationServiceImpl implements ReservationService {
 
         Reservation savedReservation =
                 reservationRepository.saveAndFlush(reservation);
+
+        return reservationMapper.toResponse(savedReservation);
+    }
+
+    @Override
+    public ReservationResponse checkInReservation(UUID id) {
+
+        // 1. Acquire PESSIMISTIC_WRITE lock on Reservation
+        Reservation reservation = reservationRepository.findByIdForUpdate(id)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "Reservation not found with id: " + id
+                ));
+        entityManager.refresh(reservation);
+
+        // 2. Acquire child ReservationRoom locks in deterministic order
+        List<ReservationRoom> lockedRooms =
+                reservationRoomRepository.findByReservationIdForUpdate(reservation.getId());
+
+        // 3. Status Validation
+        if (reservation.getStatus() == ReservationStatus.CHECKED_IN) {
+            throw new BusinessValidationException("Reservation is already checked in");
+        }
+
+        if (reservation.getStatus() != ReservationStatus.CONFIRMED) {
+            throw new BusinessValidationException(
+                    "Cannot check in reservation from status: " + reservation.getStatus()
+                            + ". Only CONFIRMED reservations can be checked in."
+            );
+        }
+
+        // 4. Timezone and Arrival Date Validation
+        Property property = propertyRepository.findById(reservation.getPropertyId())
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "Property not found with id: " + reservation.getPropertyId()
+                ));
+
+        ZoneId propertyZone;
+        try {
+            if (property.getTimezone() == null || property.getTimezone().isBlank()) {
+                throw new BusinessValidationException(
+                        "Property " + property.getId() + " does not have a configured timezone."
+                );
+            }
+            propertyZone = ZoneId.of(property.getTimezone().trim());
+        } catch (DateTimeException e) {
+            throw new BusinessValidationException(
+                    "Property " + property.getId() + " has an invalid timezone: " + property.getTimezone()
+            );
+        }
+
+        LocalDate todayInPropertyZone = LocalDate.now(clock.withZone(propertyZone));
+
+        if (todayInPropertyZone.isBefore(reservation.getCheckInDate())) {
+            throw new BusinessValidationException(
+                    "Cannot check in before reservation check-in date. "
+                            + "Check-in date: " + reservation.getCheckInDate()
+                            + ", current property date: " + todayInPropertyZone
+            );
+        }
+
+        if (!todayInPropertyZone.isBefore(reservation.getCheckOutDate())) {
+            throw new BusinessValidationException(
+                    "Cannot check in on or after reservation check-out date. "
+                            + "Check-out date: " + reservation.getCheckOutDate()
+                            + ", current property date: " + todayInPropertyZone
+            );
+        }
+
+        // 5. Full Physical Room Coverage Validation
+        int totalActiveQuantity = 0;
+        for (ReservationRoom rr : lockedRooms) {
+            if (rr.getStatus() != ReservationRoomStatus.CANCELLED) {
+                totalActiveQuantity += (rr.getQuantity() - rr.getCancelledQuantity());
+            }
+        }
+
+        if (totalActiveQuantity <= 0) {
+            throw new BusinessValidationException(
+                    "Cannot check in: Reservation has no active rooms."
+            );
+        }
+
+        Set<UUID> roomsToOccupy = new HashSet<>();
+        LocalDate checkIn = reservation.getCheckInDate();
+        LocalDate checkOut = reservation.getCheckOutDate();
+
+        for (ReservationRoom rr : lockedRooms) {
+            if (rr.getStatus() == ReservationRoomStatus.CANCELLED) {
+                continue;
+            }
+
+            int activeQuantity = rr.getQuantity() - rr.getCancelledQuantity();
+            if (activeQuantity <= 0) {
+                continue;
+            }
+
+            List<RoomAssignment> assignments =
+                    roomAssignmentRepository.findByReservationRoomId(rr.getId());
+
+            List<RoomAssignment> activeAssignments = assignments.stream()
+                    .filter(a -> a.getStatus() == RoomAssignmentStatus.ASSIGNED)
+                    .toList();
+
+            // Validate each active assignment's physical room
+            for (RoomAssignment assignment : activeAssignments) {
+                Room room = roomRepository.findById(assignment.getRoomId())
+                        .orElseThrow(() -> new ResourceNotFoundException(
+                                "Room not found with id: " + assignment.getRoomId()
+                        ));
+
+                if (!room.getPropertyId().equals(reservation.getPropertyId())) {
+                    throw new BusinessValidationException(
+                            "Assigned room " + room.getRoomNumber()
+                                    + " does not belong to the reservation property"
+                    );
+                }
+
+                if (!room.getRoomTypeId().equals(rr.getRoomTypeId())) {
+                    throw new BusinessValidationException(
+                            "Assigned room " + room.getRoomNumber()
+                                    + " does not match the reservation room type"
+                    );
+                }
+
+                if (!room.isActive()) {
+                    throw new BusinessValidationException(
+                            "Assigned room " + room.getRoomNumber()
+                                    + " is inactive and cannot be checked in"
+                    );
+                }
+
+                if (room.getStatus() == RoomStatus.OUT_OF_SERVICE) {
+                    throw new BusinessValidationException(
+                            "Assigned room " + room.getRoomNumber()
+                                    + " is out of service and cannot be checked in"
+                    );
+                }
+
+                roomsToOccupy.add(room.getId());
+            }
+
+            // Verify coverage across every date in [checkInDate, checkOutDate)
+            for (LocalDate date = checkIn; date.isBefore(checkOut); date = date.plusDays(1)) {
+                final LocalDate currentDate = date;
+                Set<UUID> assignedOnDate = new HashSet<>();
+
+                for (RoomAssignment a : activeAssignments) {
+                    if (!currentDate.isBefore(a.getAssignedFrom()) && currentDate.isBefore(a.getAssignedUntil())) {
+                        assignedOnDate.add(a.getRoomId());
+                    }
+                }
+
+                if (assignedOnDate.size() != activeQuantity) {
+                    RoomType roomType = roomTypeRepository.findById(rr.getRoomTypeId()).orElse(null);
+                    String roomTypeName = roomType != null ? roomType.getName() : rr.getRoomTypeId().toString();
+
+                    throw new BusinessValidationException(
+                            "Incomplete physical room assignment for room type '" + roomTypeName
+                                    + "' on date " + currentDate + ". Required: " + activeQuantity
+                                    + ", assigned: " + assignedOnDate.size()
+                                    + ". All reserved rooms must be physically assigned before check-in."
+                    );
+                }
+            }
+        }
+
+        // 6. Transition assigned physical rooms to OCCUPIED atomically
+        List<Room> roomsToSave = new ArrayList<>();
+        for (UUID roomId : roomsToOccupy) {
+            Room room = roomRepository.findById(roomId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Room not found with id: " + roomId));
+            if (room.getStatus() != RoomStatus.OCCUPIED) {
+                room.setStatus(RoomStatus.OCCUPIED);
+                roomsToSave.add(room);
+            }
+        }
+        if (!roomsToSave.isEmpty()) {
+            roomRepository.saveAll(roomsToSave);
+        }
+
+        // 7. Calculate checkout deadline (12:00 PM on checkOutDate in Property.timezone)
+        ZonedDateTime deadlineZoned = reservation.getCheckOutDate()
+                .atTime(12, 0)
+                .atZone(propertyZone);
+        Instant checkoutDueAt = deadlineZoned.toInstant();
+
+        reservation.setCheckoutDueAt(checkoutDueAt);
+        reservation.setCheckoutDue(false);
+
+        // 8. Transition status to CHECKED_IN and persist atomically
+        reservation.setStatus(ReservationStatus.CHECKED_IN);
+        Reservation savedReservation = reservationRepository.saveAndFlush(reservation);
 
         return reservationMapper.toResponse(savedReservation);
     }
