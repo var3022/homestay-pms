@@ -49,7 +49,7 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
         );
 
         ReservationRoom reservationRoom =
-                reservationRoomRepository.findById(
+                reservationRoomRepository.findByIdForUpdate(
                         request.getReservationRoomId()
                 ).orElseThrow(() ->
                         new ResourceNotFoundException(
@@ -274,12 +274,23 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
         }
 
         ReservationRoom reservationRoom =
-                reservationRoomRepository.findById(assignment.getReservationRoomId())
+                reservationRoomRepository.findByIdForUpdate(assignment.getReservationRoomId())
                         .orElseThrow(() ->
                                 new ResourceNotFoundException(
                                         "Reservation room not found with id: "
                                                 + assignment.getReservationRoomId()
                                 ));
+
+        // Verify post-lock that the assignment was not released while waiting for the lock
+        RoomAssignmentStatus currentStatus = roomAssignmentRepository.findStatusById(id)
+                .orElse(assignment.getStatus());
+
+        if (currentStatus == RoomAssignmentStatus.RELEASED) {
+            assignment.setStatus(RoomAssignmentStatus.RELEASED);
+            throw new BusinessValidationException(
+                    "Room assignment is already released"
+            );
+        }
 
         Reservation reservation =
                 reservationRepository.findById(reservationRoom.getReservationId())

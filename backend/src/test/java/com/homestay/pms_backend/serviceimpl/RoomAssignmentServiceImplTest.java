@@ -107,7 +107,7 @@ class RoomAssignmentServiceImplTest {
     @DisplayName("assignRoom rejects assignments for CANCELLED reservations")
     void assignRoom_rejectsCancelledReservation() {
         reservation.setStatus(ReservationStatus.CANCELLED);
-        when(reservationRoomRepository.findById(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
+        when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
 
         assertThatThrownBy(() -> roomAssignmentService.assignRoom(assignRequest))
@@ -121,7 +121,7 @@ class RoomAssignmentServiceImplTest {
     @DisplayName("assignRoom rejects assignments for CHECKED_OUT reservations")
     void assignRoom_rejectsCheckedOutReservation() {
         reservation.setStatus(ReservationStatus.CHECKED_OUT);
-        when(reservationRoomRepository.findById(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
+        when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
 
         assertThatThrownBy(() -> roomAssignmentService.assignRoom(assignRequest))
@@ -135,7 +135,7 @@ class RoomAssignmentServiceImplTest {
     @DisplayName("assignRoom rejects assignments for NO_SHOW reservations")
     void assignRoom_rejectsNoShowReservation() {
         reservation.setStatus(ReservationStatus.NO_SHOW);
-        when(reservationRoomRepository.findById(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
+        when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
 
         assertThatThrownBy(() -> roomAssignmentService.assignRoom(assignRequest))
@@ -149,7 +149,7 @@ class RoomAssignmentServiceImplTest {
     @DisplayName("assignRoom rejects OUT_OF_SERVICE rooms")
     void assignRoom_rejectsOutOfServiceRoom() {
         room.setStatus(RoomStatus.OUT_OF_SERVICE);
-        when(reservationRoomRepository.findById(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
+        when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
         when(roomRepository.findById(roomId)).thenReturn(Optional.of(room));
 
@@ -164,7 +164,7 @@ class RoomAssignmentServiceImplTest {
     @DisplayName("assignRoom rejects inactive rooms")
     void assignRoom_rejectsInactiveRoom() {
         room.setActive(false);
-        when(reservationRoomRepository.findById(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
+        when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
         when(roomRepository.findById(roomId)).thenReturn(Optional.of(room));
 
@@ -180,7 +180,7 @@ class RoomAssignmentServiceImplTest {
     void assignRoom_permitsFutureAssignmentWhenRoomIsOccupiedToday() {
         // Room status is OCCUPIED (e.g. guest currently staying)
         room.setStatus(RoomStatus.OCCUPIED);
-        when(reservationRoomRepository.findById(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
+        when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
         when(roomRepository.findById(roomId)).thenReturn(Optional.of(room));
 
@@ -216,7 +216,7 @@ class RoomAssignmentServiceImplTest {
     @Test
     @DisplayName("assignRoom rejects when room already has an overlapping ASSIGNED record for the requested dates")
     void assignRoom_rejectsOverlappingAssignment() {
-        when(reservationRoomRepository.findById(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
+        when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
         when(roomRepository.findById(roomId)).thenReturn(Optional.of(room));
 
@@ -255,7 +255,7 @@ class RoomAssignmentServiceImplTest {
         reservation.setStatus(ReservationStatus.CHECKED_IN);
 
         when(roomAssignmentRepository.findById(assignmentId)).thenReturn(Optional.of(assignment));
-        when(reservationRoomRepository.findById(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
+        when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
 
         assertThatThrownBy(() -> roomAssignmentService.releaseRoomAssignment(assignmentId))
@@ -283,6 +283,26 @@ class RoomAssignmentServiceImplTest {
     }
 
     @Test
+    @DisplayName("releaseRoomAssignment rejects when status changed to RELEASED post-lock")
+    void releaseRoomAssignment_rejectsWhenStatusChangedToReleasedPostLock() {
+        UUID assignmentId = UUID.randomUUID();
+        RoomAssignment assignment = new RoomAssignment();
+        assignment.setId(assignmentId);
+        assignment.setReservationRoomId(reservationRoomId);
+        assignment.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        when(roomAssignmentRepository.findById(assignmentId)).thenReturn(Optional.of(assignment));
+        when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
+        when(roomAssignmentRepository.findStatusById(assignmentId)).thenReturn(Optional.of(RoomAssignmentStatus.RELEASED));
+
+        assertThatThrownBy(() -> roomAssignmentService.releaseRoomAssignment(assignmentId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Room assignment is already released");
+
+        verify(roomAssignmentRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
     @DisplayName("releaseRoomAssignment rejects release when it would leave insufficient physical room coverage")
     void releaseRoomAssignment_rejectsWhenItWouldLeaveInsufficientRoomCoverage() {
         UUID assignmentId = UUID.randomUUID();
@@ -299,7 +319,7 @@ class RoomAssignmentServiceImplTest {
         reservationRoom.setCancelledQuantity(0);
 
         when(roomAssignmentRepository.findById(assignmentId)).thenReturn(Optional.of(assignment));
-        when(reservationRoomRepository.findById(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
+        when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
         // Only this single assignment exists; after excluding it, 0 remain (< 1 required)
         when(roomAssignmentRepository.findByReservationRoomId(reservationRoomId)).thenReturn(List.of(assignment));
@@ -337,7 +357,7 @@ class RoomAssignmentServiceImplTest {
         reservationRoom.setCancelledQuantity(0); // requires 1
 
         when(roomAssignmentRepository.findById(assignmentId)).thenReturn(Optional.of(assignment1));
-        when(reservationRoomRepository.findById(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
+        when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
         when(roomAssignmentRepository.findByReservationRoomId(reservationRoomId)).thenReturn(List.of(assignment1, assignment2));
         when(roomAssignmentRepository.saveAndFlush(assignment1)).thenReturn(assignment1);
@@ -380,7 +400,7 @@ class RoomAssignmentServiceImplTest {
         reservationRoom.setCancelledQuantity(1);
 
         when(roomAssignmentRepository.findById(assignment1Id)).thenReturn(Optional.of(assignment1));
-        when(reservationRoomRepository.findById(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
+        when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
         when(roomAssignmentRepository.findByReservationRoomId(reservationRoomId)).thenReturn(List.of(assignment1, assignment2));
         when(roomAssignmentRepository.saveAndFlush(assignment1)).thenReturn(assignment1);
