@@ -852,6 +852,7 @@ class ReservationServiceImplTest {
         room.setStatus(RoomStatus.AVAILABLE);
 
         when(roomRepository.findById(roomId)).thenReturn(Optional.of(room));
+        when(roomRepository.findByIdForUpdate(roomId)).thenReturn(Optional.of(room));
         when(reservationRepository.saveAndFlush(any(Reservation.class))).thenAnswer(i -> i.getArgument(0));
         when(reservationMapper.toResponse(any())).thenReturn(new ReservationResponse());
 
@@ -864,7 +865,7 @@ class ReservationServiceImplTest {
         );
         assertThat(room.getStatus()).isEqualTo(RoomStatus.OCCUPIED);
 
-        verify(roomRepository).saveAll(List.of(room));
+        verify(roomRepository).saveAllAndFlush(List.of(room));
         verify(reservationRepository).saveAndFlush(reservation);
     }
 }

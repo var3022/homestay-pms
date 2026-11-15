@@ -736,17 +736,34 @@ public class ReservationServiceImpl implements ReservationService {
         }
 
         // 6. Transition assigned physical rooms to OCCUPIED atomically
+        List<UUID> sortedRoomIds = roomsToOccupy.stream().sorted().toList();
         List<Room> roomsToSave = new ArrayList<>();
-        for (UUID roomId : roomsToOccupy) {
-            Room room = roomRepository.findById(roomId)
+        for (UUID roomId : sortedRoomIds) {
+            Room room = roomRepository.findByIdForUpdate(roomId)
                     .orElseThrow(() -> new ResourceNotFoundException("Room not found with id: " + roomId));
+            entityManager.refresh(room);
+
+            if (!room.isActive()) {
+                throw new BusinessValidationException(
+                        "Assigned room " + room.getRoomNumber()
+                                + " is inactive and cannot be checked in"
+                );
+            }
+
+            if (room.getStatus() == RoomStatus.OUT_OF_SERVICE) {
+                throw new BusinessValidationException(
+                        "Assigned room " + room.getRoomNumber()
+                                + " is out of service and cannot be checked in"
+                );
+            }
+
             if (room.getStatus() != RoomStatus.OCCUPIED) {
                 room.setStatus(RoomStatus.OCCUPIED);
                 roomsToSave.add(room);
             }
         }
         if (!roomsToSave.isEmpty()) {
-            roomRepository.saveAll(roomsToSave);
+            roomRepository.saveAllAndFlush(roomsToSave);
         }
 
         // 7. Calculate checkout deadline (12:00 PM on checkOutDate in Property.timezone)

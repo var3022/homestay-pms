@@ -40,4 +40,15 @@ public interface RoomAssignmentRepository
             LocalDate assignedUntil,
             LocalDate assignedFrom
     );
+
+    @Query("""
+        SELECT CASE WHEN count(ra) > 0 THEN true ELSE false END
+        FROM RoomAssignment ra
+        JOIN ReservationRoom rr ON ra.reservationRoomId = rr.id
+        JOIN Reservation res ON rr.reservationId = res.id
+        WHERE ra.roomId = :roomId
+          AND ra.status = com.homestay.pms_backend.enums.RoomAssignmentStatus.ASSIGNED
+          AND res.status = com.homestay.pms_backend.enums.ReservationStatus.CHECKED_IN
+    """)
+    boolean hasActiveCheckedInReservation(@Param("roomId") UUID roomId);
 }

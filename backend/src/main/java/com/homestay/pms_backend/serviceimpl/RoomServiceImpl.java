@@ -12,6 +12,7 @@ import com.homestay.pms_backend.exception.DuplicateResourceException;
 import com.homestay.pms_backend.exception.ResourceNotFoundException;
 import com.homestay.pms_backend.mapper.RoomMapper;
 import com.homestay.pms_backend.repository.PropertyRepository;
+import com.homestay.pms_backend.repository.RoomAssignmentRepository;
 import com.homestay.pms_backend.repository.RoomRepository;
 import com.homestay.pms_backend.repository.RoomTypeRepository;
 import com.homestay.pms_backend.service.RoomService;
@@ -30,6 +31,7 @@ public class RoomServiceImpl implements RoomService {
     private final RoomRepository roomRepository;
     private final PropertyRepository propertyRepository;
     private final RoomTypeRepository roomTypeRepository;
+    private final RoomAssignmentRepository roomAssignmentRepository;
     private final RoomMapper roomMapper;
 
     @Override
@@ -248,7 +250,7 @@ public class RoomServiceImpl implements RoomService {
             UUID id,
             RoomStatusUpdateRequest request) {
 
-        Room room = roomRepository.findById(id)
+        Room room = roomRepository.findByIdForUpdate(id)
                 .orElseThrow(() ->
                         new ResourceNotFoundException(
                                 "Room not found with id: " + id
@@ -257,9 +259,15 @@ public class RoomServiceImpl implements RoomService {
         RoomStatus newStatus = request.getStatus();
 
         if (room.getStatus() == newStatus) {
-                throw new BusinessValidationException(
-                        "Room is already in status: " + newStatus
-                );
+            throw new BusinessValidationException(
+                    "Room is already in status: " + newStatus
+            );
+        }
+
+        if (newStatus == RoomStatus.AVAILABLE && roomAssignmentRepository.hasActiveCheckedInReservation(id)) {
+            throw new BusinessValidationException(
+                    "Cannot mark room as AVAILABLE while it is occupied by an active checked-in reservation"
+            );
         }
 
         room.setStatus(newStatus);
