@@ -150,12 +150,18 @@ public class RoomServiceImpl implements RoomService {
     @Override
     public void deactivateRoom(UUID id) {
 
-        Room room = roomRepository.findById(id)
+        Room room = roomRepository.findByIdForUpdate(id)
                 .orElseThrow(() ->
                         new ResourceNotFoundException(
                                 "Room not found with id: " + id
                         )
                 );
+
+        if (roomAssignmentRepository.hasActiveCheckedInReservation(id)) {
+            throw new BusinessValidationException(
+                    "Cannot deactivate room while it is occupied by an active checked-in reservation"
+            );
+        }
 
         room.setActive(false);
 
