@@ -6,6 +6,7 @@ import com.homestay.pms_backend.dto.response.ReservationResponse;
 import com.homestay.pms_backend.entity.Reservation;
 import com.homestay.pms_backend.entity.ReservationRoom;
 import com.homestay.pms_backend.entity.RoomAssignment;
+import com.homestay.pms_backend.enums.HousekeepingStatus;
 import com.homestay.pms_backend.enums.ReservationRoomStatus;
 import com.homestay.pms_backend.enums.ReservationStatus;
 import com.homestay.pms_backend.enums.RoomAssignmentStatus;
@@ -707,6 +708,12 @@ public class ReservationServiceImpl implements ReservationService {
                     );
                 }
 
+                if (room.getHousekeepingStatus() != HousekeepingStatus.CLEAN) {
+                    throw new BusinessValidationException(
+                            "Cannot check in: assigned room requires housekeeping."
+                    );
+                }
+
                 roomsToOccupy.add(room.getId());
             }
 
@@ -754,6 +761,12 @@ public class ReservationServiceImpl implements ReservationService {
                 throw new BusinessValidationException(
                         "Assigned room " + room.getRoomNumber()
                                 + " is out of service and cannot be checked in"
+                );
+            }
+
+            if (room.getHousekeepingStatus() != HousekeepingStatus.CLEAN) {
+                throw new BusinessValidationException(
+                        "Cannot check in: assigned room requires housekeeping."
                 );
             }
 

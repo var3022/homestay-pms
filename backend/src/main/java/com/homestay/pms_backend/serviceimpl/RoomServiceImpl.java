@@ -1,11 +1,13 @@
 package com.homestay.pms_backend.serviceimpl;
 
 import com.homestay.pms_backend.dto.request.RoomCreateRequest;
+import com.homestay.pms_backend.dto.request.RoomHousekeepingUpdateRequest;
 import com.homestay.pms_backend.dto.request.RoomStatusUpdateRequest;
 import com.homestay.pms_backend.dto.request.RoomUpdateRequest;
 import com.homestay.pms_backend.dto.response.RoomResponse;
 import com.homestay.pms_backend.entity.Room;
 import com.homestay.pms_backend.entity.RoomType;
+import com.homestay.pms_backend.enums.HousekeepingStatus;
 import com.homestay.pms_backend.enums.RoomStatus;
 import com.homestay.pms_backend.exception.BusinessValidationException;
 import com.homestay.pms_backend.exception.DuplicateResourceException;
@@ -277,6 +279,55 @@ public class RoomServiceImpl implements RoomService {
         }
 
         room.setStatus(newStatus);
+
+        Room savedRoom = roomRepository.saveAndFlush(room);
+
+        return roomMapper.toResponse(savedRoom);
+    }
+
+    @Override
+    public RoomResponse updateHousekeepingStatus(
+            UUID id,
+            RoomHousekeepingUpdateRequest request) {
+
+        if (request == null || request.getHousekeepingStatus() == null) {
+            throw new BusinessValidationException("Housekeeping status must be provided");
+        }
+
+        Room room = roomRepository.findByIdForUpdate(id)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "Room not found with id: " + id
+                        ));
+
+        HousekeepingStatus currentStatus = room.getHousekeepingStatus();
+        HousekeepingStatus newStatus = request.getHousekeepingStatus();
+
+        if (currentStatus == newStatus) {
+            throw new BusinessValidationException(
+                    "Room is already in housekeeping status: " + newStatus
+            );
+        }
+
+        if ((newStatus == HousekeepingStatus.DIRTY || newStatus == HousekeepingStatus.CLEANING_IN_PROGRESS)
+                && roomAssignmentRepository.hasActiveCheckedInReservation(id)) {
+            throw new BusinessValidationException(
+                    "Cannot mark room as " + newStatus + " while it is occupied by an active checked-in reservation"
+            );
+        }
+
+        boolean isValidTransition =
+                (currentStatus == HousekeepingStatus.CLEAN && newStatus == HousekeepingStatus.DIRTY)
+                || (currentStatus == HousekeepingStatus.DIRTY && (newStatus == HousekeepingStatus.CLEANING_IN_PROGRESS || newStatus == HousekeepingStatus.CLEAN))
+                || (currentStatus == HousekeepingStatus.CLEANING_IN_PROGRESS && newStatus == HousekeepingStatus.CLEAN);
+
+        if (!isValidTransition) {
+            throw new BusinessValidationException(
+                    "Invalid housekeeping status transition from " + currentStatus + " to " + newStatus
+            );
+        }
+
+        room.setHousekeepingStatus(newStatus);
 
         Room savedRoom = roomRepository.saveAndFlush(room);
 

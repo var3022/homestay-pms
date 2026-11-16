@@ -1,6 +1,7 @@
 package com.homestay.pms_backend.service;
 
 import com.homestay.pms_backend.dto.request.RoomCreateRequest;
+import com.homestay.pms_backend.dto.request.RoomHousekeepingUpdateRequest;
 import com.homestay.pms_backend.dto.request.RoomStatusUpdateRequest;
 import com.homestay.pms_backend.dto.request.RoomUpdateRequest;
 import com.homestay.pms_backend.dto.response.RoomResponse;
@@ -25,4 +26,6 @@ public interface RoomService {
     void activateRoom(UUID id);
 
     RoomResponse updateRoomStatus(UUID id, RoomStatusUpdateRequest request);
+
+    RoomResponse updateHousekeepingStatus(UUID id, RoomHousekeepingUpdateRequest request);
 }

@@ -74,6 +74,7 @@ public class RoomMapper {
         response.setMaxExtraBeds(room.getMaxExtraBeds());
         response.setBathroomCount(room.getBathroomCount());
         response.setStatus(room.getStatus());
+        response.setHousekeepingStatus(room.getHousekeepingStatus());
         response.setActive(room.isActive());
         response.setCreatedAt(room.getCreatedAt());
         response.setUpdatedAt(room.getUpdatedAt());

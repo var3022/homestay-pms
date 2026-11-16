@@ -1,5 +1,6 @@
 package com.homestay.pms_backend.dto.response;
 
+import com.homestay.pms_backend.enums.HousekeepingStatus;
 import com.homestay.pms_backend.enums.RoomStatus;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -34,6 +35,8 @@ public class RoomResponse {
     private Integer bathroomCount;
 
     private RoomStatus status;
+
+    private HousekeepingStatus housekeepingStatus;
 
     private boolean active;
 

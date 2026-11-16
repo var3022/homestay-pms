@@ -1,6 +1,7 @@
 package com.homestay.pms_backend.controller;
 
 import com.homestay.pms_backend.dto.request.RoomCreateRequest;
+import com.homestay.pms_backend.dto.request.RoomHousekeepingUpdateRequest;
 import com.homestay.pms_backend.dto.request.RoomStatusUpdateRequest;
 import com.homestay.pms_backend.dto.request.RoomUpdateRequest;
 import com.homestay.pms_backend.dto.response.RoomResponse;
@@ -126,6 +127,18 @@ public class RoomController {
 
         return ResponseEntity.ok(
                 roomService.updateRoomStatus(id, request)
+        );
+    }
+
+    @PatchMapping("/{id}/housekeeping-status")
+    public ResponseEntity<RoomResponse> updateHousekeepingStatus(
+            @PathVariable UUID id,
+            @Valid @RequestBody RoomHousekeepingUpdateRequest request) {
+
+        propertyAuthorizationGuard.requireRoomAccess(id, StaffOperation.ROOM_STATUS_UPDATE);
+
+        return ResponseEntity.ok(
+                roomService.updateHousekeepingStatus(id, request)
         );
     }
 }
