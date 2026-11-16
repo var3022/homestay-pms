@@ -69,6 +69,12 @@ public class Reservation {
     @Column(name = "checkout_due_at")
     private Instant checkoutDueAt;
 
+    @Column(name = "actual_checked_out_at")
+    private Instant actualCheckedOutAt;
+
+    @Column(name = "checked_out_by_staff_user_id")
+    private UUID checkedOutByStaffUserId;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;

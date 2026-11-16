@@ -42,6 +42,10 @@ public class ReservationResponse {
 
     private Instant checkoutDueAt;
 
+    private Instant actualCheckedOutAt;
+
+    private UUID checkedOutByStaffUserId;
+
     private Instant createdAt;
 
     private Instant updatedAt;

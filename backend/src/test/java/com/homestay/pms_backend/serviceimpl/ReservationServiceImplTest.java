@@ -868,5 +868,211 @@ class ReservationServiceImplTest {
         verify(roomRepository).saveAllAndFlush(List.of(room));
         verify(reservationRepository).saveAndFlush(reservation);
     }
+
+    @Test
+    @DisplayName("checkInReservation rejects split-stay assignments across different physical rooms")
+    void checkInReservation_rejectsSplitStayAssignments() {
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        Property prop = new Property();
+        prop.setId(propertyId);
+        prop.setTimezone("Asia/Kolkata");
+        when(propertyRepository.findById(propertyId)).thenReturn(Optional.of(prop));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
+
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-11-10T05:00:00Z"), ZoneId.of("Asia/Kolkata"));
+        when(clock.withZone(any(ZoneId.class))).thenReturn(fixedClock);
+
+        // Split stay: Room 101 for night 1, Room 102 for night 2
+        UUID roomId1 = UUID.randomUUID();
+        UUID roomId2 = UUID.randomUUID();
+
+        RoomAssignment ra1 = new RoomAssignment();
+        ra1.setId(UUID.randomUUID());
+        ra1.setReservationRoomId(rr.getId());
+        ra1.setRoomId(roomId1);
+        ra1.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        ra1.setAssignedUntil(LocalDate.of(2026, 11, 11));
+        ra1.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        RoomAssignment ra2 = new RoomAssignment();
+        ra2.setId(UUID.randomUUID());
+        ra2.setReservationRoomId(rr.getId());
+        ra2.setRoomId(roomId2);
+        ra2.setAssignedFrom(LocalDate.of(2026, 11, 11));
+        ra2.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        ra2.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(ra1, ra2));
+
+        assertThatThrownBy(() -> reservationService.checkInReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Split-stay reservations (different physical rooms across stay dates) are not supported");
+
+        verify(roomRepository, never()).saveAllAndFlush(any());
+        verify(reservationRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("checkInReservation rejects partial-date assignment that does not cover full stay")
+    void checkInReservation_rejectsPartialDateAssignment() {
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        Property prop = new Property();
+        prop.setId(propertyId);
+        prop.setTimezone("Asia/Kolkata");
+        when(propertyRepository.findById(propertyId)).thenReturn(Optional.of(prop));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
+
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-11-10T05:00:00Z"), ZoneId.of("Asia/Kolkata"));
+        when(clock.withZone(any(ZoneId.class))).thenReturn(fixedClock);
+
+        UUID roomId = UUID.randomUUID();
+        // Partial assignment: covers 2026-11-10 to 2026-11-11, stay is until 2026-11-12
+        RoomAssignment ra = new RoomAssignment();
+        ra.setId(UUID.randomUUID());
+        ra.setReservationRoomId(rr.getId());
+        ra.setRoomId(roomId);
+        ra.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        ra.setAssignedUntil(LocalDate.of(2026, 11, 11));
+        ra.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(ra));
+
+        assertThatThrownBy(() -> reservationService.checkInReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Split-stay reservations (different physical rooms across stay dates) are not supported");
+
+        verify(roomRepository, never()).saveAllAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("checkInReservation rejects multiple partial assignments for the same physical room")
+    void checkInReservation_rejectsMultiplePartialAssignmentsSameRoom() {
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        Property prop = new Property();
+        prop.setId(propertyId);
+        prop.setTimezone("Asia/Kolkata");
+        when(propertyRepository.findById(propertyId)).thenReturn(Optional.of(prop));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
+
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-11-10T05:00:00Z"), ZoneId.of("Asia/Kolkata"));
+        when(clock.withZone(any(ZoneId.class))).thenReturn(fixedClock);
+
+        UUID roomId = UUID.randomUUID();
+        // Multiple partial assignments for the SAME room
+        RoomAssignment ra1 = new RoomAssignment();
+        ra1.setId(UUID.randomUUID());
+        ra1.setReservationRoomId(rr.getId());
+        ra1.setRoomId(roomId);
+        ra1.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        ra1.setAssignedUntil(LocalDate.of(2026, 11, 11));
+        ra1.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        RoomAssignment ra2 = new RoomAssignment();
+        ra2.setId(UUID.randomUUID());
+        ra2.setReservationRoomId(rr.getId());
+        ra2.setRoomId(roomId);
+        ra2.setAssignedFrom(LocalDate.of(2026, 11, 11));
+        ra2.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        ra2.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(ra1, ra2));
+
+        assertThatThrownBy(() -> reservationService.checkInReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Split-stay reservations (different physical rooms across stay dates) are not supported");
+
+        verify(roomRepository, never()).saveAllAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("checkInReservation succeeds for simultaneous multi-room reservation")
+    void checkInReservation_succeedsForSimultaneousMultiRoom() {
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        Property prop = new Property();
+        prop.setId(propertyId);
+        prop.setTimezone("Asia/Kolkata");
+        when(propertyRepository.findById(propertyId)).thenReturn(Optional.of(prop));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(2);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
+
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-11-10T05:00:00Z"), ZoneId.of("Asia/Kolkata"));
+        when(clock.withZone(any(ZoneId.class))).thenReturn(fixedClock);
+
+        UUID roomId1 = UUID.randomUUID();
+        UUID roomId2 = UUID.randomUUID();
+
+        RoomAssignment ra1 = new RoomAssignment();
+        ra1.setId(UUID.randomUUID());
+        ra1.setReservationRoomId(rr.getId());
+        ra1.setRoomId(roomId1);
+        ra1.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        ra1.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        ra1.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        RoomAssignment ra2 = new RoomAssignment();
+        ra2.setId(UUID.randomUUID());
+        ra2.setReservationRoomId(rr.getId());
+        ra2.setRoomId(roomId2);
+        ra2.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        ra2.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        ra2.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(ra1, ra2));
+
+        Room room1 = new Room();
+        room1.setId(roomId1);
+        room1.setPropertyId(propertyId);
+        room1.setRoomTypeId(roomTypeId);
+        room1.setRoomNumber("101");
+        room1.setActive(true);
+        room1.setStatus(RoomStatus.AVAILABLE);
+
+        Room room2 = new Room();
+        room2.setId(roomId2);
+        room2.setPropertyId(propertyId);
+        room2.setRoomTypeId(roomTypeId);
+        room2.setRoomNumber("102");
+        room2.setActive(true);
+        room2.setStatus(RoomStatus.AVAILABLE);
+
+        when(roomRepository.findById(roomId1)).thenReturn(Optional.of(room1));
+        when(roomRepository.findById(roomId2)).thenReturn(Optional.of(room2));
+        when(roomRepository.findByIdForUpdate(roomId1)).thenReturn(Optional.of(room1));
+        when(roomRepository.findByIdForUpdate(roomId2)).thenReturn(Optional.of(room2));
+        when(reservationRepository.saveAndFlush(any(Reservation.class))).thenAnswer(i -> i.getArgument(0));
+        when(reservationMapper.toResponse(any())).thenReturn(new ReservationResponse());
+
+        reservationService.checkInReservation(reservationId);
+
+        assertThat(reservation.getStatus()).isEqualTo(ReservationStatus.CHECKED_IN);
+        assertThat(room1.getStatus()).isEqualTo(RoomStatus.OCCUPIED);
+        assertThat(room2.getStatus()).isEqualTo(RoomStatus.OCCUPIED);
+
+        verify(roomRepository).saveAllAndFlush(any());
+        verify(reservationRepository).saveAndFlush(reservation);
+    }
 }
 

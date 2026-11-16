@@ -52,6 +52,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 @Transactional
@@ -673,6 +674,35 @@ public class ReservationServiceImpl implements ReservationService {
                     .filter(a -> a.getStatus() == RoomAssignmentStatus.ASSIGNED)
                     .toList();
 
+            // Check for split-stay or partial-date assignments
+            boolean hasPartialOrSplitAssignment = activeAssignments.stream()
+                    .anyMatch(a -> !a.getAssignedFrom().equals(checkIn) || !a.getAssignedUntil().equals(checkOut));
+
+            if (hasPartialOrSplitAssignment) {
+                throw new BusinessValidationException(
+                        "Cannot check in: Split-stay reservations (different physical rooms across stay dates) "
+                                + "are not supported. Split-stay bookings require consecutive reservations or a "
+                                + "future room-transfer workflow. All assigned rooms must cover the full stay period "
+                                + "from " + checkIn + " to " + checkOut + "."
+                );
+            }
+
+            Set<UUID> assignedRoomIds = activeAssignments.stream()
+                    .map(RoomAssignment::getRoomId)
+                    .collect(Collectors.toSet());
+
+            if (activeAssignments.size() != activeQuantity || assignedRoomIds.size() != activeQuantity) {
+                RoomType roomType = roomTypeRepository.findById(rr.getRoomTypeId()).orElse(null);
+                String roomTypeName = roomType != null ? roomType.getName() : rr.getRoomTypeId().toString();
+
+                throw new BusinessValidationException(
+                        "Incomplete physical room assignment for room type '" + roomTypeName
+                                + "'. Required: " + activeQuantity
+                                + ", assigned: " + assignedRoomIds.size()
+                                + ". All reserved rooms must be physically assigned before check-in."
+                );
+            }
+
             // Validate each active assignment's physical room
             for (RoomAssignment assignment : activeAssignments) {
                 Room room = roomRepository.findById(assignment.getRoomId())
@@ -716,30 +746,13 @@ public class ReservationServiceImpl implements ReservationService {
 
                 roomsToOccupy.add(room.getId());
             }
+        }
 
-            // Verify coverage across every date in [checkInDate, checkOutDate)
-            for (LocalDate date = checkIn; date.isBefore(checkOut); date = date.plusDays(1)) {
-                final LocalDate currentDate = date;
-                Set<UUID> assignedOnDate = new HashSet<>();
-
-                for (RoomAssignment a : activeAssignments) {
-                    if (!currentDate.isBefore(a.getAssignedFrom()) && currentDate.isBefore(a.getAssignedUntil())) {
-                        assignedOnDate.add(a.getRoomId());
-                    }
-                }
-
-                if (assignedOnDate.size() != activeQuantity) {
-                    RoomType roomType = roomTypeRepository.findById(rr.getRoomTypeId()).orElse(null);
-                    String roomTypeName = roomType != null ? roomType.getName() : rr.getRoomTypeId().toString();
-
-                    throw new BusinessValidationException(
-                            "Incomplete physical room assignment for room type '" + roomTypeName
-                                    + "' on date " + currentDate + ". Required: " + activeQuantity
-                                    + ", assigned: " + assignedOnDate.size()
-                                    + ". All reserved rooms must be physically assigned before check-in."
-                    );
-                }
-            }
+        if (roomsToOccupy.size() != totalActiveQuantity) {
+            throw new BusinessValidationException(
+                    "Duplicate physical room assignment detected across reservation rooms. "
+                            + "Each reserved room must be assigned to a unique physical room."
+            );
         }
 
         // 6. Transition assigned physical rooms to OCCUPIED atomically

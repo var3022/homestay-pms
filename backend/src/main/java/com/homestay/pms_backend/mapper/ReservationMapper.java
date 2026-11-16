@@ -78,6 +78,8 @@ public class ReservationMapper {
         response.setSpecialRequests(reservation.getSpecialRequests());
         response.setCheckoutDue(reservation.isCheckoutDue());
         response.setCheckoutDueAt(reservation.getCheckoutDueAt());
+        response.setActualCheckedOutAt(reservation.getActualCheckedOutAt());
+        response.setCheckedOutByStaffUserId(reservation.getCheckedOutByStaffUserId());
         response.setCreatedAt(reservation.getCreatedAt());
         response.setUpdatedAt(reservation.getUpdatedAt());
 
