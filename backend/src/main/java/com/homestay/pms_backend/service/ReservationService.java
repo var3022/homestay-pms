@@ -28,4 +28,6 @@ public interface ReservationService {
     ReservationResponse cancelReservation(UUID id);
 
     ReservationResponse checkInReservation(UUID id);
+
+    ReservationResponse checkOutReservation(UUID id);
 }

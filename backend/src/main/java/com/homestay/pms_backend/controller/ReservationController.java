@@ -105,4 +105,15 @@ public class ReservationController {
                 reservationService.checkInReservation(id)
         );
     }
+
+    @PostMapping("/{id}/check-out")
+    public ResponseEntity<ReservationResponse> checkOutReservation(
+            @PathVariable UUID id) {
+
+        reservationAuthorizationGuard.requireReservationAccess(id, StaffOperation.RESERVATION_MANAGE);
+
+        return ResponseEntity.ok(
+                reservationService.checkOutReservation(id)
+        );
+    }
 }

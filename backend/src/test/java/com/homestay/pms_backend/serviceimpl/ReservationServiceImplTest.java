@@ -1,5 +1,6 @@
 package com.homestay.pms_backend.serviceimpl;
 
+import com.homestay.pms_backend.config.SecurityEnforcementProperties;
 import com.homestay.pms_backend.dto.request.ReservationUpdateRequest;
 import com.homestay.pms_backend.dto.response.ReservationResponse;
 import com.homestay.pms_backend.entity.BookingSource;
@@ -9,6 +10,7 @@ import com.homestay.pms_backend.entity.ReservationRoom;
 import com.homestay.pms_backend.entity.Room;
 import com.homestay.pms_backend.entity.RoomAssignment;
 import com.homestay.pms_backend.entity.RoomType;
+import com.homestay.pms_backend.enums.HousekeepingStatus;
 import com.homestay.pms_backend.enums.ReservationRoomStatus;
 import com.homestay.pms_backend.enums.ReservationStatus;
 import com.homestay.pms_backend.enums.RoomAssignmentStatus;
@@ -24,6 +26,8 @@ import com.homestay.pms_backend.repository.ReservationRoomRepository;
 import com.homestay.pms_backend.repository.RoomAssignmentRepository;
 import com.homestay.pms_backend.repository.RoomRepository;
 import com.homestay.pms_backend.repository.RoomTypeRepository;
+import com.homestay.pms_backend.security.AuthenticatedStaffPrincipal;
+import com.homestay.pms_backend.security.authorization.StaffAuthorizationService;
 import com.homestay.pms_backend.service.GuestPropertyAssociationService;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -81,6 +85,10 @@ class ReservationServiceImplTest {
     private EntityManager entityManager;
     @Mock
     private Clock clock;
+    @Mock
+    private StaffAuthorizationService staffAuthorizationService;
+    @Mock
+    private SecurityEnforcementProperties securityEnforcementProperties;
 
     @InjectMocks
     private ReservationServiceImpl reservationService;
@@ -1073,6 +1081,429 @@ class ReservationServiceImplTest {
 
         verify(roomRepository).saveAllAndFlush(any());
         verify(reservationRepository).saveAndFlush(reservation);
+    }
+
+    @Test
+    @DisplayName("checkOutReservation succeeds for single-room reservation")
+    void checkOutReservation_succeedsForSingleRoom() {
+        reservation.setStatus(ReservationStatus.CHECKED_IN);
+        reservation.setCheckoutDue(true);
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
+
+        UUID roomId = UUID.randomUUID();
+        RoomAssignment ra = new RoomAssignment();
+        ra.setId(UUID.randomUUID());
+        ra.setReservationRoomId(rr.getId());
+        ra.setRoomId(roomId);
+        ra.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        ra.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        ra.setStatus(RoomAssignmentStatus.ASSIGNED);
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(ra));
+
+        Room room = new Room();
+        room.setId(roomId);
+        room.setPropertyId(propertyId);
+        room.setRoomTypeId(roomTypeId);
+        room.setRoomNumber("101");
+        room.setActive(true);
+        room.setStatus(RoomStatus.OCCUPIED);
+        room.setHousekeepingStatus(HousekeepingStatus.CLEAN);
+        when(roomRepository.findByIdForUpdate(roomId)).thenReturn(Optional.of(room));
+
+        when(roomAssignmentRepository.hasOtherActiveCheckedInReservation(roomId, reservationId)).thenReturn(false);
+
+        UUID staffUserId = UUID.randomUUID();
+        AuthenticatedStaffPrincipal principal = new AuthenticatedStaffPrincipal(staffUserId, "staff@test.com", "Staff", "User");
+        when(staffAuthorizationService.getCurrentPrincipal()).thenReturn(Optional.of(principal));
+
+        Instant checkoutInstant = Instant.parse("2026-11-12T11:00:00Z");
+        when(clock.instant()).thenReturn(checkoutInstant);
+
+        when(reservationRepository.saveAndFlush(any(Reservation.class))).thenAnswer(i -> i.getArgument(0));
+        when(reservationMapper.toResponse(any())).thenReturn(new ReservationResponse());
+
+        ReservationResponse response = reservationService.checkOutReservation(reservationId);
+
+        assertThat(response).isNotNull();
+        assertThat(reservation.getStatus()).isEqualTo(ReservationStatus.CHECKED_OUT);
+        assertThat(reservation.isCheckoutDue()).isFalse();
+        assertThat(reservation.getActualCheckedOutAt()).isEqualTo(checkoutInstant);
+        assertThat(reservation.getCheckedOutByStaffUserId()).isEqualTo(staffUserId);
+
+        assertThat(room.getStatus()).isEqualTo(RoomStatus.AVAILABLE);
+        assertThat(room.getHousekeepingStatus()).isEqualTo(HousekeepingStatus.DIRTY);
+        assertThat(ra.getStatus()).isEqualTo(RoomAssignmentStatus.RELEASED);
+
+        verify(roomAssignmentRepository).saveAllAndFlush(List.of(ra));
+        verify(roomRepository).saveAllAndFlush(List.of(room));
+        verify(reservationRepository).saveAndFlush(reservation);
+    }
+
+    @Test
+    @DisplayName("checkOutReservation succeeds for simultaneous multi-room reservation")
+    void checkOutReservation_succeedsForSimultaneousMultiRoom() {
+        reservation.setStatus(ReservationStatus.CHECKED_IN);
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(2);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
+
+        UUID roomId1 = UUID.randomUUID();
+        UUID roomId2 = UUID.randomUUID();
+
+        RoomAssignment ra1 = new RoomAssignment();
+        ra1.setId(UUID.randomUUID());
+        ra1.setReservationRoomId(rr.getId());
+        ra1.setRoomId(roomId1);
+        ra1.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        ra1.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        ra1.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        RoomAssignment ra2 = new RoomAssignment();
+        ra2.setId(UUID.randomUUID());
+        ra2.setReservationRoomId(rr.getId());
+        ra2.setRoomId(roomId2);
+        ra2.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        ra2.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        ra2.setStatus(RoomAssignmentStatus.ASSIGNED);
+
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(ra1, ra2));
+
+        Room room1 = new Room();
+        room1.setId(roomId1);
+        room1.setPropertyId(propertyId);
+        room1.setRoomTypeId(roomTypeId);
+        room1.setRoomNumber("101");
+        room1.setActive(true);
+        room1.setStatus(RoomStatus.OCCUPIED);
+        room1.setHousekeepingStatus(HousekeepingStatus.CLEAN);
+
+        Room room2 = new Room();
+        room2.setId(roomId2);
+        room2.setPropertyId(propertyId);
+        room2.setRoomTypeId(roomTypeId);
+        room2.setRoomNumber("102");
+        room2.setActive(true);
+        room2.setStatus(RoomStatus.OCCUPIED);
+        room2.setHousekeepingStatus(HousekeepingStatus.CLEAN);
+
+        when(roomRepository.findByIdForUpdate(roomId1)).thenReturn(Optional.of(room1));
+        when(roomRepository.findByIdForUpdate(roomId2)).thenReturn(Optional.of(room2));
+
+        when(roomAssignmentRepository.hasOtherActiveCheckedInReservation(roomId1, reservationId)).thenReturn(false);
+        when(roomAssignmentRepository.hasOtherActiveCheckedInReservation(roomId2, reservationId)).thenReturn(false);
+
+        UUID staffUserId = UUID.randomUUID();
+        AuthenticatedStaffPrincipal principal = new AuthenticatedStaffPrincipal(staffUserId, "staff@test.com", "Staff", "User");
+        when(staffAuthorizationService.getCurrentPrincipal()).thenReturn(Optional.of(principal));
+        when(clock.instant()).thenReturn(Instant.parse("2026-11-12T11:00:00Z"));
+
+        when(reservationRepository.saveAndFlush(any(Reservation.class))).thenAnswer(i -> i.getArgument(0));
+        when(reservationMapper.toResponse(any())).thenReturn(new ReservationResponse());
+
+        reservationService.checkOutReservation(reservationId);
+
+        assertThat(reservation.getStatus()).isEqualTo(ReservationStatus.CHECKED_OUT);
+        assertThat(room1.getStatus()).isEqualTo(RoomStatus.AVAILABLE);
+        assertThat(room1.getHousekeepingStatus()).isEqualTo(HousekeepingStatus.DIRTY);
+        assertThat(room2.getStatus()).isEqualTo(RoomStatus.AVAILABLE);
+        assertThat(room2.getHousekeepingStatus()).isEqualTo(HousekeepingStatus.DIRTY);
+        assertThat(ra1.getStatus()).isEqualTo(RoomAssignmentStatus.RELEASED);
+        assertThat(ra2.getStatus()).isEqualTo(RoomAssignmentStatus.RELEASED);
+
+        verify(roomAssignmentRepository).saveAllAndFlush(any());
+        verify(roomRepository).saveAllAndFlush(any());
+        verify(reservationRepository).saveAndFlush(reservation);
+    }
+
+    @Test
+    @DisplayName("checkOutReservation rejects repeated checkout")
+    void checkOutReservation_rejectsRepeatedCheckout() {
+        reservation.setStatus(ReservationStatus.CHECKED_OUT);
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        assertThatThrownBy(() -> reservationService.checkOutReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Reservation is already checked out");
+
+        verify(roomRepository, never()).saveAllAndFlush(any());
+        verify(reservationRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("checkOutReservation rejects non CHECKED_IN reservation")
+    void checkOutReservation_rejectsNonCheckedInReservation() {
+        reservation.setStatus(ReservationStatus.CONFIRMED);
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        assertThatThrownBy(() -> reservationService.checkOutReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Only CHECKED_IN reservations can be checked out");
+
+        verify(roomRepository, never()).saveAllAndFlush(any());
+        verify(reservationRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("checkOutReservation preserves OUT_OF_SERVICE status and marks DIRTY")
+    void checkOutReservation_preservesOutOfServiceStatusAndMarksDirty() {
+        reservation.setStatus(ReservationStatus.CHECKED_IN);
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
+
+        UUID roomId = UUID.randomUUID();
+        RoomAssignment ra = new RoomAssignment();
+        ra.setId(UUID.randomUUID());
+        ra.setReservationRoomId(rr.getId());
+        ra.setRoomId(roomId);
+        ra.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        ra.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        ra.setStatus(RoomAssignmentStatus.ASSIGNED);
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(ra));
+
+        Room room = new Room();
+        room.setId(roomId);
+        room.setPropertyId(propertyId);
+        room.setRoomTypeId(roomTypeId);
+        room.setRoomNumber("101");
+        room.setActive(true);
+        room.setStatus(RoomStatus.OUT_OF_SERVICE);
+        room.setHousekeepingStatus(HousekeepingStatus.CLEAN);
+        when(roomRepository.findByIdForUpdate(roomId)).thenReturn(Optional.of(room));
+
+        when(roomAssignmentRepository.hasOtherActiveCheckedInReservation(roomId, reservationId)).thenReturn(false);
+
+        UUID staffUserId = UUID.randomUUID();
+        AuthenticatedStaffPrincipal principal = new AuthenticatedStaffPrincipal(staffUserId, "staff@test.com", "Staff", "User");
+        when(staffAuthorizationService.getCurrentPrincipal()).thenReturn(Optional.of(principal));
+        when(clock.instant()).thenReturn(Instant.parse("2026-11-12T11:00:00Z"));
+
+        when(reservationRepository.saveAndFlush(any(Reservation.class))).thenAnswer(i -> i.getArgument(0));
+        when(reservationMapper.toResponse(any())).thenReturn(new ReservationResponse());
+
+        reservationService.checkOutReservation(reservationId);
+
+        assertThat(room.getStatus()).isEqualTo(RoomStatus.OUT_OF_SERVICE);
+        assertThat(room.getHousekeepingStatus()).isEqualTo(HousekeepingStatus.DIRTY);
+        assertThat(ra.getStatus()).isEqualTo(RoomAssignmentStatus.RELEASED);
+    }
+
+    @Test
+    @DisplayName("checkOutReservation preserves inactive room flag")
+    void checkOutReservation_preservesInactiveRoomFlag() {
+        reservation.setStatus(ReservationStatus.CHECKED_IN);
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
+
+        UUID roomId = UUID.randomUUID();
+        RoomAssignment ra = new RoomAssignment();
+        ra.setId(UUID.randomUUID());
+        ra.setReservationRoomId(rr.getId());
+        ra.setRoomId(roomId);
+        ra.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        ra.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        ra.setStatus(RoomAssignmentStatus.ASSIGNED);
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(ra));
+
+        Room room = new Room();
+        room.setId(roomId);
+        room.setPropertyId(propertyId);
+        room.setRoomTypeId(roomTypeId);
+        room.setRoomNumber("101");
+        room.setActive(false);
+        room.setStatus(RoomStatus.OCCUPIED);
+        room.setHousekeepingStatus(HousekeepingStatus.CLEAN);
+        when(roomRepository.findByIdForUpdate(roomId)).thenReturn(Optional.of(room));
+
+        when(roomAssignmentRepository.hasOtherActiveCheckedInReservation(roomId, reservationId)).thenReturn(false);
+
+        UUID staffUserId = UUID.randomUUID();
+        AuthenticatedStaffPrincipal principal = new AuthenticatedStaffPrincipal(staffUserId, "staff@test.com", "Staff", "User");
+        when(staffAuthorizationService.getCurrentPrincipal()).thenReturn(Optional.of(principal));
+        when(clock.instant()).thenReturn(Instant.parse("2026-11-12T11:00:00Z"));
+
+        when(reservationRepository.saveAndFlush(any(Reservation.class))).thenAnswer(i -> i.getArgument(0));
+        when(reservationMapper.toResponse(any())).thenReturn(new ReservationResponse());
+
+        reservationService.checkOutReservation(reservationId);
+
+        assertThat(room.isActive()).isFalse();
+        assertThat(room.getStatus()).isEqualTo(RoomStatus.AVAILABLE);
+        assertThat(room.getHousekeepingStatus()).isEqualTo(HousekeepingStatus.DIRTY);
+    }
+
+    @Test
+    @DisplayName("checkOutReservation rejects unexpected AVAILABLE room status")
+    void checkOutReservation_rejectsUnexpectedAvailableRoomStatus() {
+        reservation.setStatus(ReservationStatus.CHECKED_IN);
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
+
+        UUID roomId = UUID.randomUUID();
+        RoomAssignment ra = new RoomAssignment();
+        ra.setId(UUID.randomUUID());
+        ra.setReservationRoomId(rr.getId());
+        ra.setRoomId(roomId);
+        ra.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        ra.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        ra.setStatus(RoomAssignmentStatus.ASSIGNED);
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(ra));
+
+        Room room = new Room();
+        room.setId(roomId);
+        room.setPropertyId(propertyId);
+        room.setRoomTypeId(roomTypeId);
+        room.setRoomNumber("101");
+        room.setActive(true);
+        room.setStatus(RoomStatus.AVAILABLE);
+        when(roomRepository.findByIdForUpdate(roomId)).thenReturn(Optional.of(room));
+
+        when(roomAssignmentRepository.hasOtherActiveCheckedInReservation(roomId, reservationId)).thenReturn(false);
+
+        assertThatThrownBy(() -> reservationService.checkOutReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("is unexpectedly in AVAILABLE status");
+
+        verify(roomAssignmentRepository, never()).saveAllAndFlush(any());
+        verify(reservationRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("checkOutReservation rejects split-stay or incomplete assignments")
+    void checkOutReservation_rejectsSplitStayAssignments() {
+        reservation.setStatus(ReservationStatus.CHECKED_IN);
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
+
+        RoomAssignment raPartial = new RoomAssignment();
+        raPartial.setId(UUID.randomUUID());
+        raPartial.setReservationRoomId(rr.getId());
+        raPartial.setRoomId(UUID.randomUUID());
+        raPartial.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        raPartial.setAssignedUntil(LocalDate.of(2026, 11, 11)); // only partial date!
+        raPartial.setStatus(RoomAssignmentStatus.ASSIGNED);
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(raPartial));
+
+        assertThatThrownBy(() -> reservationService.checkOutReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Cannot check out: Split-stay or partial-date room assignments detected");
+
+        verify(roomRepository, never()).saveAllAndFlush(any());
+        verify(reservationRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("checkOutReservation rejects when physical room is occupied by another checked-in reservation")
+    void checkOutReservation_rejectsWhenRoomOccupiedByOtherGuest() {
+        reservation.setStatus(ReservationStatus.CHECKED_IN);
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
+
+        UUID roomId = UUID.randomUUID();
+        RoomAssignment ra = new RoomAssignment();
+        ra.setId(UUID.randomUUID());
+        ra.setReservationRoomId(rr.getId());
+        ra.setRoomId(roomId);
+        ra.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        ra.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        ra.setStatus(RoomAssignmentStatus.ASSIGNED);
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(ra));
+
+        Room room = new Room();
+        room.setId(roomId);
+        room.setPropertyId(propertyId);
+        room.setRoomTypeId(roomTypeId);
+        room.setRoomNumber("101");
+        room.setActive(true);
+        room.setStatus(RoomStatus.OCCUPIED);
+        when(roomRepository.findByIdForUpdate(roomId)).thenReturn(Optional.of(room));
+
+        when(roomAssignmentRepository.hasOtherActiveCheckedInReservation(roomId, reservationId)).thenReturn(true);
+
+        assertThatThrownBy(() -> reservationService.checkOutReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("is currently referenced by another active checked-in reservation");
+
+        verify(roomAssignmentRepository, never()).saveAllAndFlush(any());
+        verify(reservationRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("checkOutReservation fails closed when staff principal missing under enforcement")
+    void checkOutReservation_failsClosedWhenStaffPrincipalMissingUnderEnforcement() {
+        reservation.setStatus(ReservationStatus.CHECKED_IN);
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
+
+        ReservationRoom rr = new ReservationRoom();
+        rr.setId(UUID.randomUUID());
+        rr.setRoomTypeId(roomTypeId);
+        rr.setQuantity(1);
+        when(reservationRoomRepository.findByReservationIdForUpdate(reservationId)).thenReturn(List.of(rr));
+
+        UUID roomId = UUID.randomUUID();
+        RoomAssignment ra = new RoomAssignment();
+        ra.setId(UUID.randomUUID());
+        ra.setReservationRoomId(rr.getId());
+        ra.setRoomId(roomId);
+        ra.setAssignedFrom(LocalDate.of(2026, 11, 10));
+        ra.setAssignedUntil(LocalDate.of(2026, 11, 12));
+        ra.setStatus(RoomAssignmentStatus.ASSIGNED);
+        when(roomAssignmentRepository.findByReservationRoomId(rr.getId())).thenReturn(List.of(ra));
+
+        Room room = new Room();
+        room.setId(roomId);
+        room.setPropertyId(propertyId);
+        room.setRoomTypeId(roomTypeId);
+        room.setRoomNumber("101");
+        room.setActive(true);
+        room.setStatus(RoomStatus.OCCUPIED);
+        when(roomRepository.findByIdForUpdate(roomId)).thenReturn(Optional.of(room));
+
+        when(roomAssignmentRepository.hasOtherActiveCheckedInReservation(roomId, reservationId)).thenReturn(false);
+
+        when(staffAuthorizationService.getCurrentPrincipal()).thenReturn(Optional.empty());
+        when(securityEnforcementProperties.isEnabled()).thenReturn(true);
+
+        assertThatThrownBy(() -> reservationService.checkOutReservation(reservationId))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Authenticated staff principal is required");
+
+        verify(roomAssignmentRepository, never()).saveAllAndFlush(any());
+        verify(reservationRepository, never()).saveAndFlush(any());
     }
 }
 
