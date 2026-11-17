@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
+import { StaffHeader } from "./StaffHeader";
 
 const subscribeToDate = () => () => {};
 
@@ -233,12 +234,15 @@ export default function DashboardPage() {
                 Dashboard
               </h1>
             </div>
-            <Link
-              href="/"
-              className="rounded-full border border-[#dce2d9] px-4 py-2.5 text-sm font-medium hover:bg-[#f5f6f3]"
-            >
-              View website ↗
-            </Link>
+            <div className="flex items-center gap-3">
+              <Link
+                href="/"
+                className="hidden rounded-full border border-[#dce2d9] px-4 py-2 text-sm font-medium hover:bg-[#f5f6f3] sm:inline-block"
+              >
+                View website ↗
+              </Link>
+              <StaffHeader />
+            </div>
           </header>
 
           <div className="mx-auto max-w-7xl space-y-8 px-5 py-7 sm:px-8 sm:py-9">

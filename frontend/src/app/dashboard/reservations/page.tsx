@@ -1,8 +1,9 @@
-﻿
+
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { StaffHeader } from "../StaffHeader";
 
 type Reservation = {
   id: string;
@@ -603,6 +604,8 @@ export default function ReservationsPage() {
             >
               {showCreateForm ? "Close form" : "+ New reservation"}
             </button>
+
+            <StaffHeader />
           </div>
         </div>
       </header>
