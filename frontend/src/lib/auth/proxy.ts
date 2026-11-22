@@ -124,14 +124,19 @@ export async function proxyToBackend(
     if (contentType?.includes("application/json")) {
       forwardHeaders.set("Content-Type", "application/json");
       try {
-        const json = await request.json();
-        // Never override existing propertyId
-        if (options?.injectPropertyId && process.env.PMS_PROPERTY_ID) {
-          if (!json.propertyId) {
-            json.propertyId = process.env.PMS_PROPERTY_ID;
+        const rawText = await request.text();
+        if (rawText && rawText.trim().length > 0) {
+          const json = JSON.parse(rawText);
+          // Never override existing propertyId
+          if (options?.injectPropertyId && process.env.PMS_PROPERTY_ID) {
+            if (!json.propertyId) {
+              json.propertyId = process.env.PMS_PROPERTY_ID;
+            }
           }
+          requestBody = JSON.stringify(json);
+        } else {
+          requestBody = undefined;
         }
-        requestBody = JSON.stringify(json);
       } catch {
         return NextResponse.json(
           { error: "Invalid JSON in request body." },

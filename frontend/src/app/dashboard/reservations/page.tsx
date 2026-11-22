@@ -7,6 +7,7 @@ import { StaffHeader } from "../StaffHeader";
 
 type Reservation = {
   id: string;
+  propertyId?: string;
   primaryGuestId: string;
   bookingSourceId: string;
   checkInDate: string;
@@ -17,6 +18,12 @@ type Reservation = {
   externalBookingId: string | null;
   status: string;
   checkoutDue: boolean;
+  checkoutDueAt?: string | null;
+  actualCheckedOutAt?: string | null;
+  checkedOutByStaffUserId?: string | null;
+  specialRequests?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 type Guest = {
@@ -76,6 +83,9 @@ type PhysicalRoom = {
   roomNumber: string;
   name?: string;
   roomTypeId: string;
+  status?: string;
+  housekeepingStatus?: string;
+  active?: boolean;
 };
 
 const filters = [
@@ -97,6 +107,25 @@ function formatDate(value: string) {
   if (!value) return "—";
   const [year, month, day] = value.split("-");
   return `${day}/${month}/${year}`;
+}
+
+function formatDateTimeIST(value?: string | null) {
+  if (!value) return "—";
+  try {
+    const date = new Date(value);
+    if (isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat("en-IN", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    }).format(date);
+  } catch {
+    return value;
+  }
 }
 
 function todayInIndia() {
@@ -221,6 +250,24 @@ export default function ReservationsPage() {
 
     return () => window.clearTimeout(timer);
   }, [successMessage]);
+
+  const [checkingIn, setCheckingIn] = useState(false);
+  const [checkingOut, setCheckingOut] = useState(false);
+  const [showCheckInConfirm, setShowCheckInConfirm] = useState(false);
+  const [showCheckOutConfirm, setShowCheckOutConfirm] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const [actionSuccess, setActionSuccess] = useState("");
+  const [uncertainOutcome, setUncertainOutcome] = useState(false);
+
+  useEffect(() => {
+    if (!actionSuccess) return;
+
+    const timer = window.setTimeout(() => {
+      setActionSuccess("");
+    }, 5000);
+
+    return () => window.clearTimeout(timer);
+  }, [actionSuccess]);
   const [guestMode, setGuestMode] = useState<"existing" | "new">("existing");
   const [primaryGuestId, setPrimaryGuestId] = useState("");
   const [newGuestName, setNewGuestName] = useState("");
@@ -557,6 +604,134 @@ export default function ReservationsPage() {
       );
     } finally {
       setSaving(false);
+    }
+  }
+
+  const handleCloseModal = useCallback(() => {
+    if (uncertainOutcome) {
+      void loadReservations();
+    }
+    setSelectedReservation(null);
+    setShowCheckInConfirm(false);
+    setShowCheckOutConfirm(false);
+    setActionError("");
+    setUncertainOutcome(false);
+  }, [uncertainOutcome, loadReservations]);
+
+  async function handleCheckInSubmit() {
+    if (!selectedReservation || checkingIn) return;
+    setCheckingIn(true);
+    setActionError("");
+    setUncertainOutcome(false);
+
+    try {
+      const response = await fetch(
+        `/api/reservations/${encodeURIComponent(selectedReservation.id)}/check-in`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-PMS-Client": "staff-web",
+          },
+        }
+      );
+
+      const data = await readResponse(response);
+      const updated = unwrapObject<Reservation>(data);
+
+      setSelectedReservation(updated);
+      setReservations((prev) =>
+        prev.map((r) => (r.id === updated.id ? updated : r))
+      );
+      void loadReservations();
+      setShowCheckInConfirm(false);
+      setActionSuccess("Guest checked in successfully. Assigned physical room(s) marked OCCUPIED.");
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to check in reservation.";
+      setActionError(message);
+      if (
+        message.toLowerCase().includes("cannot connect") ||
+        message.toLowerCase().includes("network") ||
+        message.toLowerCase().includes("failed (502)")
+      ) {
+        setUncertainOutcome(true);
+      }
+    } finally {
+      setCheckingIn(false);
+    }
+  }
+
+  async function handleCheckOutSubmit() {
+    if (!selectedReservation || checkingOut) return;
+    setCheckingOut(true);
+    setActionError("");
+    setUncertainOutcome(false);
+
+    try {
+      const response = await fetch(
+        `/api/reservations/${encodeURIComponent(selectedReservation.id)}/check-out`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-PMS-Client": "staff-web",
+          },
+        }
+      );
+
+      const data = await readResponse(response);
+      const updated = unwrapObject<Reservation>(data);
+
+      setSelectedReservation(updated);
+      setReservations((prev) =>
+        prev.map((r) => (r.id === updated.id ? updated : r))
+      );
+      void loadReservations();
+      setShowCheckOutConfirm(false);
+      setActionSuccess(
+        "Checkout confirmed successfully. Physical room assignments released and vacated room(s) marked DIRTY for housekeeping."
+      );
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to check out reservation.";
+      setActionError(message);
+      if (
+        message.toLowerCase().includes("cannot connect") ||
+        message.toLowerCase().includes("network") ||
+        message.toLowerCase().includes("failed (502)")
+      ) {
+        setUncertainOutcome(true);
+      }
+    } finally {
+      setCheckingOut(false);
+    }
+  }
+
+  async function handleRefreshSelectedReservation() {
+    if (!selectedReservation) return;
+    try {
+      const response = await fetch("/api/reservations", { cache: "no-store" });
+      const data = await readResponse(response);
+      const list = unwrapList<Reservation>(data);
+      setReservations(list);
+      const found = list.find((r) => r.id === selectedReservation.id);
+      if (found) {
+        setSelectedReservation(found);
+        if (showCheckInConfirm && found.status !== "CONFIRMED") {
+          setShowCheckInConfirm(false);
+        }
+        if (showCheckOutConfirm && found.status !== "CHECKED_IN") {
+          setShowCheckOutConfirm(false);
+        }
+      }
+      setActionError("");
+      setUncertainOutcome(false);
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : "Failed to refresh reservation."
+      );
+      setUncertainOutcome(true);
     }
   }
 
@@ -1220,7 +1395,7 @@ export default function ReservationsPage() {
       {selectedReservation && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]"
-          onClick={() => setSelectedReservation(null)}
+          onClick={handleCloseModal}
         >
           <section
             role="dialog"
@@ -1250,7 +1425,7 @@ export default function ReservationsPage() {
 
               <button
                 type="button"
-                onClick={() => setSelectedReservation(null)}
+                onClick={handleCloseModal}
                 aria-label="Close reservation details"
                 className="rounded-lg px-3 py-2 text-xl text-[#59675e] hover:bg-[#FF605C] hover:text-white"
               >
@@ -1259,6 +1434,28 @@ export default function ReservationsPage() {
             </div>
 
             <div className="space-y-6 p-6">
+              {actionSuccess && (
+                <div className="rounded-xl bg-green-50 p-4 text-sm text-green-800 border border-green-200">
+                  {actionSuccess}
+                </div>
+              )}
+
+              {actionError && !showCheckInConfirm && !showCheckOutConfirm && (
+                <div className="rounded-xl bg-red-50 p-4 text-sm text-red-700 border border-red-200 space-y-2">
+                  <p className="font-semibold">Action error:</p>
+                  <p>{actionError}</p>
+                  {uncertainOutcome && (
+                    <button
+                      type="button"
+                      onClick={handleRefreshSelectedReservation}
+                      className="mt-2 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-[#24382e] border border-[#dce2d9] hover:bg-[#f5f6f3]"
+                    >
+                      Refresh reservation state
+                    </button>
+                  )}
+                </div>
+              )}
+
               <div>
                 <h3 className="mb-3 text-sm font-semibold text-[#294638]">
                   Guest information
@@ -1346,7 +1543,7 @@ export default function ReservationsPage() {
                               <p className="mt-1 text-sm text-[#748077]">
                                 Quantity: {reservedRoom.activeQuantity}
                                 {reservedRoom.cancelledQuantity > 0 &&
-                                  ` · Cancelled: ${reservedRoom.cancelledQuantity}`}
+                                   ` · Cancelled: ${reservedRoom.cancelledQuantity}`}
                               </p>
                             </div>
 
@@ -1396,12 +1593,23 @@ export default function ReservationsPage() {
                                       key={assignment.id}
                                       className="rounded-lg bg-[#f8f9f6] p-3"
                                     >
-                                      <p className="text-sm font-medium text-[#24382e]">
-                                        Room {physicalRoom?.roomNumber ?? "unavailable"}
-                                        {physicalRoom?.name
-                                          ? ` · ${physicalRoom.name}`
-                                          : ""}
-                                      </p>
+                                      <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <p className="text-sm font-medium text-[#24382e]">
+                                          Room {physicalRoom?.roomNumber ?? "unavailable"}
+                                          {physicalRoom?.name
+                                            ? ` · ${physicalRoom.name}`
+                                            : ""}
+                                        </p>
+                                        {physicalRoom?.housekeepingStatus && (
+                                          <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                                            physicalRoom.housekeepingStatus === "CLEAN"
+                                              ? "bg-green-100 text-green-800"
+                                              : "bg-amber-100 text-amber-800"
+                                          }`}>
+                                            {physicalRoom.housekeepingStatus}
+                                          </span>
+                                        )}
+                                      </div>
                                       <p className="mt-1 text-xs text-[#748077]">
                                         {formatDate(assignment.assignedFrom)} –{" "}
                                         {formatDate(assignment.assignedUntil)}
@@ -1507,17 +1715,367 @@ export default function ReservationsPage() {
                   </div>
                 </div>
               </div>
+
+              {/* Front Desk Operations Section */}
+              <div className="border-t border-[#e8ebe5] pt-6">
+                <h3 className="mb-3 text-sm font-semibold text-[#294638]">
+                  Front desk operations
+                </h3>
+
+                {selectedReservation.status === "CONFIRMED" && (
+                  <div className="rounded-xl border border-[#dce2d9] bg-[#f8f9f6] p-4 space-y-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-[#557762]">
+                        Guest Arrival / Check-in
+                      </p>
+                      <p className="mt-1 text-xs text-[#59675e] leading-relaxed">
+                        Staff check-in policy: The PMS backend requires that all reserved rooms have complete full-stay physical room assignments and that all assigned rooms are in <strong className="font-semibold text-[#24382e]">CLEAN</strong> housekeeping status in the property timezone (Asia/Kolkata). Check-in cannot occur before the scheduled arrival date.
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg bg-white p-3 border border-[#e8ebe5] text-xs space-y-1.5">
+                      <div className="flex justify-between text-[#435448]">
+                        <span>Reserved active room units:</span>
+                        <span className="font-semibold">
+                          {reservationRooms.reduce(
+                            (sum, r) => sum + (r.activeQuantity || (r.quantity - r.cancelledQuantity)),
+                            0
+                          )}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-[#435448]">
+                        <span>Assigned physical rooms:</span>
+                        <span className="font-semibold">
+                          {roomAssignments.filter((a) => a.status === "ASSIGNED").length}
+                        </span>
+                      </div>
+                      {physicalRooms.some(
+                        (p) => p.housekeepingStatus && p.housekeepingStatus !== "CLEAN"
+                      ) && (
+                        <p className="mt-1 text-amber-700 font-medium">
+                          Notice: One or more assigned physical rooms are not marked CLEAN. Backend check-in validation will enforce cleanliness.
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="pt-1 flex items-center justify-between gap-3">
+                      <p className="text-xs text-[#89938b]">
+                        Scheduled arrival: {formatDate(selectedReservation.checkInDate)}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActionError("");
+                          setShowCheckInConfirm(true);
+                        }}
+                        aria-label="Check in guest for this reservation"
+                        className="rounded-full bg-[#294638] px-5 py-2 text-sm font-medium text-white hover:bg-[#20382c] transition shadow-sm"
+                      >
+                        Check in guest →
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {selectedReservation.status === "CHECKED_IN" && (
+                  <div className="rounded-xl border border-[#dce2d9] bg-[#f8f9f6] p-4 space-y-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-[#557762]">
+                        Guest Departure / Checkout
+                      </p>
+                      <p className="mt-1 text-xs text-[#59675e] leading-relaxed">
+                        Staff checkout policy: The reservation remains in <strong className="font-semibold text-[#24382e]">CHECKED_IN</strong> status until front desk staff confirms guest departure. Confirming checkout releases all physical room assignments and marks vacated rooms <strong className="font-semibold text-[#24382e]">DIRTY</strong> for housekeeping.
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg bg-white p-3 border border-[#e8ebe5] text-xs space-y-1.5">
+                      <div className="flex justify-between text-[#435448]">
+                        <span>Scheduled checkout date:</span>
+                        <span className="font-semibold">{formatDate(selectedReservation.checkOutDate)}</span>
+                      </div>
+                      <div className="flex justify-between text-[#435448]">
+                        <span>Checkout deadline:</span>
+                        <span className="font-semibold">{formatDateTimeIST(selectedReservation.checkoutDueAt)}</span>
+                      </div>
+                      <div className="flex justify-between text-[#435448]">
+                        <span>Checkout status:</span>
+                        <span className={`font-semibold ${selectedReservation.checkoutDue ? "text-amber-700" : "text-green-700"}`}>
+                          {selectedReservation.checkoutDue ? "Overdue / Due today" : "On schedule"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="pt-1 flex items-center justify-between gap-3">
+                      <p className="text-xs text-[#89938b]">
+                        Active in-house stay
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActionError("");
+                          setShowCheckOutConfirm(true);
+                        }}
+                        aria-label="Confirm checkout for this reservation"
+                        className="rounded-full bg-[#8c3327] px-5 py-2 text-sm font-medium text-white hover:bg-[#73291f] transition shadow-sm"
+                      >
+                        Confirm checkout →
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {selectedReservation.status === "CHECKED_OUT" && (
+                  <div className="rounded-xl border border-[#e8ebe5] bg-[#f8f9f6] p-4 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-block h-2.5 w-2.5 rounded-full bg-gray-500" />
+                      <p className="text-xs font-semibold uppercase tracking-wider text-gray-700">
+                        Stay Completed · Checked Out
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-[#435448] pt-1">
+                      <div>
+                        <span className="text-[#89938b]">Actual checkout time:</span>
+                        <p className="font-medium text-[#24382e] mt-0.5">
+                          {formatDateTimeIST(selectedReservation.actualCheckedOutAt)}
+                        </p>
+                      </div>
+                      {selectedReservation.checkedOutByStaffUserId && (
+                        <div>
+                          <span className="text-[#89938b]">Staff actor ID:</span>
+                          <p className="font-mono text-xs text-[#24382e] mt-0.5 break-all">
+                            {selectedReservation.checkedOutByStaffUserId}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-xs text-[#748077] pt-1">
+                      This reservation is in terminal CHECKED_OUT status. Physical room assignments were released and vacated rooms were marked dirty.
+                    </p>
+                  </div>
+                )}
+
+                {["PENDING", "CANCELLED", "NO_SHOW"].includes(selectedReservation.status) && (
+                  <div className="rounded-xl border border-[#e8ebe5] bg-[#f8f9f6] p-4 text-xs text-[#748077]">
+                    {selectedReservation.status === "PENDING" && (
+                      <p>This reservation is PENDING confirmation. Check-in cannot proceed until the reservation is CONFIRMED.</p>
+                    )}
+                    {selectedReservation.status === "CANCELLED" && (
+                      <p>This reservation has been CANCELLED. No further front desk operations can be performed.</p>
+                    )}
+                    {selectedReservation.status === "NO_SHOW" && (
+                      <p>This reservation was marked as NO_SHOW. Front desk check-in/checkout is not applicable.</p>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
 
-            {/* <div className="flex justify-end border-t border-[#e8ebe5] px-6 py-4">
+            <div className="flex justify-end border-t border-[#e8ebe5] px-6 py-4">
               <button
                 type="button"
-                onClick={() => setSelectedReservation(null)}
-                className="rounded-xl bg-[#294638] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#3b5b49]"
+                onClick={handleCloseModal}
+                className="rounded-full border border-[#dce2d9] bg-white px-5 py-2 text-sm font-medium text-[#435448] hover:bg-[#f5f6f3]"
               >
                 Close
               </button>
-            </div> */}
+            </div>
+
+            {/* Check-In Confirmation Dialog */}
+            {showCheckInConfirm && (
+              <div
+                className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="checkin-dialog-title"
+              >
+                <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl space-y-4">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-[#557762]">
+                        Front Desk Confirmation
+                      </p>
+                      <h3 id="checkin-dialog-title" className="mt-1 font-serif text-xl text-[#24382e]">
+                        Confirm Guest Check-In
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={checkingIn}
+                      onClick={() => setShowCheckInConfirm(false)}
+                      className="text-xl text-[#59675e] hover:text-[#24382e] disabled:opacity-50"
+                      aria-label="Close check-in confirmation"
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  <div className="space-y-2 rounded-xl bg-[#f8f9f6] p-3 text-xs text-[#435448]">
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Guest:</span>
+                      <span className="font-medium text-[#24382e]">
+                        {guests.find((g) => g.id === selectedReservation.primaryGuestId)?.name ?? "Guest"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Stay period:</span>
+                      <span>{formatDate(selectedReservation.checkInDate)} – {formatDate(selectedReservation.checkOutDate)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Reservation ID:</span>
+                      <span className="font-mono">{selectedReservation.id.slice(0, 8)}…</span>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-[#59675e] leading-relaxed">
+                    Confirming check-in will transition the reservation to <strong className="font-semibold text-[#24382e]">CHECKED_IN</strong> and mark assigned physical rooms as <strong className="font-semibold text-[#24382e]">OCCUPIED</strong>. The PMS backend will verify full-stay room assignments and that all assigned rooms are CLEAN in the property timezone.
+                  </p>
+
+                  {actionError && (
+                    <div className="rounded-xl bg-red-50 p-3 text-xs text-red-700 border border-red-200 space-y-2">
+                      <div>
+                        <p className="font-semibold">Check-in could not be completed:</p>
+                        <p className="mt-0.5">{actionError}</p>
+                      </div>
+                      {uncertainOutcome && (
+                        <div className="pt-1">
+                          <p className="text-amber-800">
+                            The connection timed out or an error occurred. Please refresh the reservation state to check current status before re-attempting.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={handleRefreshSelectedReservation}
+                            className="mt-2 rounded-lg bg-white px-3 py-1 text-xs font-medium text-[#24382e] border border-[#dce2d9] hover:bg-[#f5f6f3]"
+                          >
+                            Refresh reservation state
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex justify-end gap-3 pt-2">
+                    <button
+                      type="button"
+                      disabled={checkingIn}
+                      onClick={() => setShowCheckInConfirm(false)}
+                      className="rounded-full border border-[#dce2d9] px-4 py-2 text-xs font-medium text-[#435448] hover:bg-[#f5f6f3] disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={checkingIn}
+                      onClick={handleCheckInSubmit}
+                      className="rounded-full bg-[#294638] px-5 py-2 text-xs font-medium text-white hover:bg-[#20382c] transition shadow-sm disabled:opacity-50"
+                    >
+                      {checkingIn ? "Checking in guest…" : "Confirm Check-in"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Checkout Confirmation Dialog */}
+            {showCheckOutConfirm && (
+              <div
+                className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="checkout-dialog-title"
+              >
+                <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl space-y-4">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-[#8c3327]">
+                        Irreversible Action
+                      </p>
+                      <h3 id="checkout-dialog-title" className="mt-1 font-serif text-xl text-[#24382e]">
+                        Confirm Guest Checkout
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={checkingOut}
+                      onClick={() => setShowCheckOutConfirm(false)}
+                      className="text-xl text-[#59675e] hover:text-[#24382e] disabled:opacity-50"
+                      aria-label="Close checkout confirmation"
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  <div className="space-y-2 rounded-xl bg-[#f8f9f6] p-3 text-xs text-[#435448]">
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Guest:</span>
+                      <span className="font-medium text-[#24382e]">
+                        {guests.find((g) => g.id === selectedReservation.primaryGuestId)?.name ?? "Guest"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Scheduled departure:</span>
+                      <span>{formatDate(selectedReservation.checkOutDate)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Checkout deadline:</span>
+                      <span>{formatDateTimeIST(selectedReservation.checkoutDueAt)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Reservation ID:</span>
+                      <span className="font-mono">{selectedReservation.id.slice(0, 8)}…</span>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl bg-amber-50 p-3 text-xs text-amber-800 border border-amber-200">
+                    <p className="font-semibold">Irreversible Lifecycle Transition:</p>
+                    <p className="mt-0.5 leading-relaxed">
+                      Confirming checkout transitions this reservation to <strong className="font-semibold">CHECKED_OUT</strong>. All room assignments will be <strong className="font-semibold">RELEASED</strong>, and vacated rooms will be marked <strong className="font-semibold">DIRTY</strong> for housekeeping.
+                    </p>
+                  </div>
+
+                  {actionError && (
+                    <div className="rounded-xl bg-red-50 p-3 text-xs text-red-700 border border-red-200 space-y-2">
+                      <div>
+                        <p className="font-semibold">Checkout failed:</p>
+                        <p className="mt-0.5">{actionError}</p>
+                      </div>
+                      {uncertainOutcome && (
+                        <div className="pt-1">
+                          <p className="text-amber-800">
+                            The connection timed out or an error occurred. Please refresh the reservation state to check current status before re-attempting.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={handleRefreshSelectedReservation}
+                            className="mt-2 rounded-lg bg-white px-3 py-1 text-xs font-medium text-[#24382e] border border-[#dce2d9] hover:bg-[#f5f6f3]"
+                          >
+                            Refresh reservation state
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex justify-end gap-3 pt-2">
+                    <button
+                      type="button"
+                      disabled={checkingOut}
+                      onClick={() => setShowCheckOutConfirm(false)}
+                      className="rounded-full border border-[#dce2d9] px-4 py-2 text-xs font-medium text-[#435448] hover:bg-[#f5f6f3] disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={checkingOut}
+                      onClick={handleCheckOutSubmit}
+                      className="rounded-full bg-[#8c3327] px-5 py-2 text-xs font-medium text-white hover:bg-[#73291f] transition shadow-sm disabled:opacity-50"
+                    >
+                      {checkingOut ? "Processing checkout…" : "Confirm Checkout"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </section>
         </div>
       )}
