@@ -95,6 +95,17 @@ public class ReservationController {
         );
     }
 
+    @PatchMapping("/{id}/confirm")
+    public ResponseEntity<ReservationResponse> confirmReservation(
+            @PathVariable UUID id) {
+
+        reservationAuthorizationGuard.requireReservationAccess(id, StaffOperation.RESERVATION_MANAGE);
+
+        return ResponseEntity.ok(
+                reservationService.confirmReservation(id)
+        );
+    }
+
     @PostMapping("/{id}/check-in")
     public ResponseEntity<ReservationResponse> checkInReservation(
             @PathVariable UUID id) {

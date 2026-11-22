@@ -562,6 +562,118 @@ public class ReservationServiceImpl implements ReservationService {
         }
 
         @Override
+        public ReservationResponse confirmReservation(UUID id) {
+
+                // 1. Acquire PESSIMISTIC_WRITE lock on Reservation
+                Reservation reservation = reservationRepository.findByIdForUpdate(id)
+                                .orElseThrow(() -> new ResourceNotFoundException(
+                                                "Reservation not found with id: " + id));
+                entityManager.refresh(reservation);
+
+                // 2. Acquire child ReservationRoom locks in deterministic order
+                List<ReservationRoom> lockedRooms = reservationRoomRepository
+                                .findByReservationIdForUpdate(reservation.getId());
+
+                // 3. Resolve booking source
+                BookingSource bookingSource = bookingSourceRepository
+                                .findById(reservation.getBookingSourceId())
+                                .orElseThrow(() -> new ResourceNotFoundException(
+                                                "Booking source not found with id: "
+                                                                + reservation.getBookingSourceId()));
+
+                // 4. Validate booking source (DIRECT only)
+                if (!"DIRECT".equals(bookingSource.getCode())) {
+                        throw new BusinessValidationException(
+                                        "OTA reservations cannot be confirmed locally. "
+                                                        + "Confirmation must be confirmed by the booking platform.");
+                }
+
+                // 5. Status Validation
+                if (reservation.getStatus() == ReservationStatus.CONFIRMED) {
+                        throw new BusinessValidationException("Reservation is already confirmed");
+                }
+
+                if (reservation.getStatus() != ReservationStatus.PENDING) {
+                        throw new BusinessValidationException(
+                                        "Cannot confirm reservation from status: " + reservation.getStatus()
+                                                        + ". Only PENDING reservations can be confirmed.");
+                }
+
+                // 6. Exclusion-safe availability re-validation
+                validateReservationRoomsAvailabilityExcludingSelf(reservation, lockedRooms);
+
+                // 7. Transition status
+                reservation.setStatus(ReservationStatus.CONFIRMED);
+
+                Reservation savedReservation = reservationRepository.saveAndFlush(reservation);
+
+                return reservationMapper.toResponse(savedReservation);
+        }
+
+        private void validateReservationRoomsAvailabilityExcludingSelf(
+                        Reservation reservation,
+                        List<ReservationRoom> reservationRooms) {
+
+                Map<UUID, Integer> activeQuantityByRoomType = new HashMap<>();
+                for (ReservationRoom rr : reservationRooms) {
+                        if (rr.getStatus() == ReservationRoomStatus.CANCELLED) {
+                                continue;
+                        }
+
+                        int activeQuantity = rr.getQuantity() - rr.getCancelledQuantity();
+                        if (activeQuantity > 0) {
+                                activeQuantityByRoomType.merge(rr.getRoomTypeId(), activeQuantity, Integer::sum);
+                        }
+                }
+
+                for (Map.Entry<UUID, Integer> entry : activeQuantityByRoomType.entrySet()) {
+                        UUID roomTypeId = entry.getKey();
+                        int requiredQuantity = entry.getValue();
+
+                        RoomType roomType = roomTypeRepository.findById(roomTypeId)
+                                        .orElseThrow(() -> new ResourceNotFoundException(
+                                                        "Room type not found with id: " + roomTypeId));
+
+                        if (!roomType.isActive()) {
+                                throw new BusinessValidationException(
+                                                "The selected room type is inactive: " + roomType.getName());
+                        }
+
+                        long totalRooms = roomRepository
+                                        .countByPropertyIdAndRoomTypeIdAndActiveTrueAndStatusNot(
+                                                        reservation.getPropertyId(),
+                                                        roomTypeId,
+                                                        RoomStatus.OUT_OF_SERVICE);
+
+                        Long reservedQuantity = reservationRoomRepository
+                                        .sumReservedQuantityForOverlappingDatesExcludingReservation(
+                                                        reservation.getPropertyId(),
+                                                        roomTypeId,
+                                                        reservation.getCheckInDate(),
+                                                        reservation.getCheckOutDate(),
+                                                        List.of(
+                                                                        ReservationStatus.PENDING,
+                                                                        ReservationStatus.CONFIRMED,
+                                                                        ReservationStatus.CHECKED_IN),
+                                                        reservation.getId());
+
+                        long alreadyReserved = reservedQuantity == null ? 0L : reservedQuantity;
+
+                        long availableRooms = totalRooms - alreadyReserved;
+
+                        if (requiredQuantity > availableRooms) {
+                                throw new BusinessValidationException(
+                                                "Insufficient availability for room type '"
+                                                                + roomType.getName()
+                                                                + "' for the requested dates. Requested: "
+                                                                + requiredQuantity
+                                                                + ", available: "
+                                                                + Math.max(availableRooms, 0L));
+                        }
+                }
+        }
+
+        @Override
         public ReservationResponse checkInReservation(UUID id) {
 
                 // 1. Acquire PESSIMISTIC_WRITE lock on Reservation
