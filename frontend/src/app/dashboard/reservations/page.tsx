@@ -740,12 +740,21 @@ export default function ReservationsPage() {
       <header className="border-b border-[#e1e6df] bg-white px-5 py-3 sm:px-8 sm:py-3">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4">
           <div>
-            <Link
-              href="/dashboard"
-              className="text-sm text-[#748077] hover:text-[#294638]"
-            >
-              ← Back to dashboard
-            </Link>
+            <div className="flex items-center gap-2 text-xs font-medium text-[#748077]">
+              <Link
+                href="/dashboard"
+                className="hover:text-[#294638]"
+              >
+                ← Back to dashboard
+              </Link>
+              <span>•</span>
+              <Link
+                href="/dashboard/rooms"
+                className="hover:text-[#294638]"
+              >
+                Housekeeping &amp; Rooms
+              </Link>
+            </div>
             <h1 className="mt-1 font-serif text-xl sm:text-2xl">
               Reservations
             </h1>
