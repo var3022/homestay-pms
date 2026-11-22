@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { StaffHeader } from "../StaffHeader";
 
@@ -126,6 +126,19 @@ function formatDateTimeIST(value?: string | null) {
   } catch {
     return value;
   }
+}
+
+function isUncertainError(message: string): boolean {
+  if (!message) return false;
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("cannot connect") ||
+    lower.includes("network") ||
+    lower.includes("failed (502)") ||
+    lower.includes("504") ||
+    lower.includes("gateway") ||
+    lower.includes("timeout")
+  );
 }
 
 function todayInIndia() {
@@ -253,11 +266,23 @@ export default function ReservationsPage() {
 
   const [checkingIn, setCheckingIn] = useState(false);
   const [checkingOut, setCheckingOut] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [showCheckInConfirm, setShowCheckInConfirm] = useState(false);
   const [showCheckOutConfirm, setShowCheckOutConfirm] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [actionError, setActionError] = useState("");
   const [actionSuccess, setActionSuccess] = useState("");
   const [uncertainOutcome, setUncertainOutcome] = useState(false);
+  const [uncertainReservationIds, setUncertainReservationIds] = useState<Set<string>>(new Set());
+
+  const confirmTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const confirmDialogRef = useRef<HTMLDivElement | null>(null);
+  const listRequestSeqRef = useRef(0);
+
+  const isCurrentReservationUncertain = Boolean(
+    selectedReservation &&
+      (uncertainReservationIds.has(selectedReservation.id) || uncertainOutcome)
+  );
 
   useEffect(() => {
     if (!actionSuccess) return;
@@ -268,6 +293,58 @@ export default function ReservationsPage() {
 
     return () => window.clearTimeout(timer);
   }, [actionSuccess]);
+
+  useEffect(() => {
+    if (showConfirmModal) {
+      const timer = window.setTimeout(() => {
+        if (confirmDialogRef.current) {
+          const focusable = confirmDialogRef.current.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          );
+          if (focusable.length > 0) {
+            focusable[0].focus();
+          }
+        }
+      }, 0);
+      return () => window.clearTimeout(timer);
+    } else {
+      if (confirmTriggerRef.current) {
+        confirmTriggerRef.current.focus();
+      }
+    }
+  }, [showConfirmModal]);
+
+  const handleConfirmDialogKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (e.key === "Escape" && !confirming) {
+        e.stopPropagation();
+        setShowConfirmModal(false);
+        return;
+      }
+      if (e.key === "Tab" && confirmDialogRef.current) {
+        const focusable = Array.from(
+          confirmDialogRef.current.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          )
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey) {
+          if (document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else {
+          if (document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      }
+    },
+    [confirming]
+  );
   const [guestMode, setGuestMode] = useState<"existing" | "new">("existing");
   const [primaryGuestId, setPrimaryGuestId] = useState("");
   const [newGuestName, setNewGuestName] = useState("");
@@ -294,19 +371,23 @@ export default function ReservationsPage() {
   ]);
 
   const loadReservations = useCallback(async () => {
-
+    const seq = ++listRequestSeqRef.current;
     try {
       const response = await fetch("/api/reservations", {
         cache: "no-store",
       });
       const data = await readResponse(response);
+      if (seq < listRequestSeqRef.current) return;
       setReservations(unwrapList<Reservation>(data));
     } catch (err) {
+      if (seq < listRequestSeqRef.current) return;
       setError(
         err instanceof Error ? err.message : "Could not load reservations.",
       );
     } finally {
-      setLoading(false);
+      if (seq >= listRequestSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -608,25 +689,78 @@ export default function ReservationsPage() {
   }
 
   const handleCloseModal = useCallback(() => {
-    if (uncertainOutcome) {
+    if (
+      uncertainOutcome ||
+      (selectedReservation && uncertainReservationIds.has(selectedReservation.id))
+    ) {
       void loadReservations();
     }
     setSelectedReservation(null);
+    setShowConfirmModal(false);
     setShowCheckInConfirm(false);
     setShowCheckOutConfirm(false);
     setActionError("");
     setUncertainOutcome(false);
-  }, [uncertainOutcome, loadReservations]);
+  }, [uncertainOutcome, selectedReservation, uncertainReservationIds, loadReservations]);
 
-  async function handleCheckInSubmit() {
-    if (!selectedReservation || checkingIn) return;
-    setCheckingIn(true);
+  async function handleConfirmSubmit() {
+    if (!selectedReservation || confirming) return;
+    const resId = selectedReservation.id;
+    if (uncertainReservationIds.has(resId)) return;
+
+    setConfirming(true);
     setActionError("");
     setUncertainOutcome(false);
+    listRequestSeqRef.current++;
 
     try {
       const response = await fetch(
-        `/api/reservations/${encodeURIComponent(selectedReservation.id)}/check-in`,
+        `/api/reservations/${encodeURIComponent(resId)}/confirm`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "X-PMS-Client": "staff-web",
+          },
+        }
+      );
+
+      const data = await readResponse(response);
+      const updated = unwrapObject<Reservation>(data);
+
+      setSelectedReservation(updated);
+      setReservations((prev) =>
+        prev.map((r) => (r.id === updated.id ? updated : r))
+      );
+      void loadReservations();
+      setShowConfirmModal(false);
+      setActionSuccess("Reservation confirmed successfully. The reservation is now CONFIRMED.");
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to confirm reservation.";
+      setActionError(message);
+      if (isUncertainError(message)) {
+        setUncertainOutcome(true);
+        setUncertainReservationIds((prev) => new Set(prev).add(resId));
+      }
+    } finally {
+      setConfirming(false);
+    }
+  }
+
+  async function handleCheckInSubmit() {
+    if (!selectedReservation || checkingIn) return;
+    const resId = selectedReservation.id;
+    if (uncertainReservationIds.has(resId)) return;
+
+    setCheckingIn(true);
+    setActionError("");
+    setUncertainOutcome(false);
+    listRequestSeqRef.current++;
+
+    try {
+      const response = await fetch(
+        `/api/reservations/${encodeURIComponent(resId)}/check-in`,
         {
           method: "POST",
           headers: {
@@ -650,12 +784,9 @@ export default function ReservationsPage() {
       const message =
         err instanceof Error ? err.message : "Failed to check in reservation.";
       setActionError(message);
-      if (
-        message.toLowerCase().includes("cannot connect") ||
-        message.toLowerCase().includes("network") ||
-        message.toLowerCase().includes("failed (502)")
-      ) {
+      if (isUncertainError(message)) {
         setUncertainOutcome(true);
+        setUncertainReservationIds((prev) => new Set(prev).add(resId));
       }
     } finally {
       setCheckingIn(false);
@@ -664,13 +795,17 @@ export default function ReservationsPage() {
 
   async function handleCheckOutSubmit() {
     if (!selectedReservation || checkingOut) return;
+    const resId = selectedReservation.id;
+    if (uncertainReservationIds.has(resId)) return;
+
     setCheckingOut(true);
     setActionError("");
     setUncertainOutcome(false);
+    listRequestSeqRef.current++;
 
     try {
       const response = await fetch(
-        `/api/reservations/${encodeURIComponent(selectedReservation.id)}/check-out`,
+        `/api/reservations/${encodeURIComponent(resId)}/check-out`,
         {
           method: "POST",
           headers: {
@@ -696,12 +831,9 @@ export default function ReservationsPage() {
       const message =
         err instanceof Error ? err.message : "Failed to check out reservation.";
       setActionError(message);
-      if (
-        message.toLowerCase().includes("cannot connect") ||
-        message.toLowerCase().includes("network") ||
-        message.toLowerCase().includes("failed (502)")
-      ) {
+      if (isUncertainError(message)) {
         setUncertainOutcome(true);
+        setUncertainReservationIds((prev) => new Set(prev).add(resId));
       }
     } finally {
       setCheckingOut(false);
@@ -710,14 +842,25 @@ export default function ReservationsPage() {
 
   async function handleRefreshSelectedReservation() {
     if (!selectedReservation) return;
+    const resId = selectedReservation.id;
+    const seq = ++listRequestSeqRef.current;
     try {
       const response = await fetch("/api/reservations", { cache: "no-store" });
       const data = await readResponse(response);
+      if (seq < listRequestSeqRef.current) return;
       const list = unwrapList<Reservation>(data);
       setReservations(list);
-      const found = list.find((r) => r.id === selectedReservation.id);
+      const found = list.find((r) => r.id === resId);
       if (found) {
         setSelectedReservation(found);
+        setUncertainReservationIds((prev) => {
+          const next = new Set(prev);
+          next.delete(resId);
+          return next;
+        });
+        if (showConfirmModal && found.status !== "PENDING") {
+          setShowConfirmModal(false);
+        }
         if (showCheckInConfirm && found.status !== "CONFIRMED") {
           setShowCheckInConfirm(false);
         }
@@ -728,10 +871,12 @@ export default function ReservationsPage() {
       setActionError("");
       setUncertainOutcome(false);
     } catch (err) {
+      if (seq < listRequestSeqRef.current) return;
       setActionError(
         err instanceof Error ? err.message : "Failed to refresh reservation."
       );
       setUncertainOutcome(true);
+      setUncertainReservationIds((prev) => new Set(prev).add(resId));
     }
   }
 
@@ -1444,16 +1589,16 @@ export default function ReservationsPage() {
 
             <div className="space-y-6 p-6">
               {actionSuccess && (
-                <div className="rounded-xl bg-green-50 p-4 text-sm text-green-800 border border-green-200">
+                <div role="status" aria-live="polite" className="rounded-xl bg-green-50 p-4 text-sm text-green-800 border border-green-200">
                   {actionSuccess}
                 </div>
               )}
 
-              {actionError && !showCheckInConfirm && !showCheckOutConfirm && (
-                <div className="rounded-xl bg-red-50 p-4 text-sm text-red-700 border border-red-200 space-y-2">
+              {actionError && !showCheckInConfirm && !showCheckOutConfirm && !showConfirmModal && (
+                <div role="alert" aria-live="polite" className="rounded-xl bg-red-50 p-4 text-sm text-red-700 border border-red-200 space-y-2">
                   <p className="font-semibold">Action error:</p>
                   <p>{actionError}</p>
-                  {uncertainOutcome && (
+                  {isCurrentReservationUncertain && (
                     <button
                       type="button"
                       onClick={handleRefreshSelectedReservation}
@@ -1863,11 +2008,85 @@ export default function ReservationsPage() {
                   </div>
                 )}
 
-                {["PENDING", "CANCELLED", "NO_SHOW"].includes(selectedReservation.status) && (
+                {selectedReservation.status === "PENDING" && (() => {
+                  const bookingSource = bookingSources.find(
+                    (source) => source.id === selectedReservation.bookingSourceId
+                  );
+                  const isDirect = bookingSource?.code?.toUpperCase() === "DIRECT";
+
+                  if (isDirect) {
+                    return (
+                      <div className="rounded-xl border border-[#dce2d9] bg-[#f8f9f6] p-4 space-y-3">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wider text-[#557762]">
+                            Reservation Confirmation
+                          </p>
+                          <p className="mt-1 text-xs text-[#59675e] leading-relaxed">
+                            Staff confirmation policy: Eligible DIRECT reservations must be confirmed by front desk staff before guest arrival and room assignment. Room availability was already held upon reservation creation; confirmation validates guest arrival readiness without assigning a physical room.
+                          </p>
+                        </div>
+
+                        <div className="rounded-lg bg-white p-3 border border-[#e8ebe5] text-xs space-y-1.5">
+                          <div className="flex justify-between text-[#435448]">
+                            <span>Booking source:</span>
+                            <span className="font-semibold text-[#24382e]">
+                              {bookingSource?.name || "Direct / PMS"} ({bookingSource?.code || "DIRECT"})
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-[#435448]">
+                            <span>Scheduled arrival:</span>
+                            <span className="font-semibold">{formatDate(selectedReservation.checkInDate)}</span>
+                          </div>
+                          <div className="flex justify-between text-[#435448]">
+                            <span>Reserved active room units:</span>
+                            <span className="font-semibold">
+                              {reservationRooms.reduce(
+                                (sum, r) => sum + (r.activeQuantity || (r.quantity - r.cancelledQuantity)),
+                                0
+                              )}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="pt-1 flex items-center justify-between gap-3">
+                          <p className="text-xs text-[#89938b]">
+                            Pending front desk confirmation
+                          </p>
+                          <button
+                            ref={confirmTriggerRef}
+                            type="button"
+                            disabled={confirming || isCurrentReservationUncertain}
+                            onClick={() => {
+                              setActionError("");
+                              setShowConfirmModal(true);
+                            }}
+                            aria-label="Confirm this reservation"
+                            className="rounded-full bg-[#294638] px-5 py-2 text-sm font-medium text-white hover:bg-[#20382c] transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            Confirm reservation →
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="rounded-xl border border-[#e8ebe5] bg-[#f8f9f6] p-4 text-xs text-[#748077] space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-block h-2 w-2 rounded-full bg-amber-500" />
+                        <p className="font-semibold text-[#435448]">
+                          External Channel / OTA Reservation
+                        </p>
+                      </div>
+                      <p>
+                        This reservation was booked via {bookingSource?.name || "an external platform"} ({bookingSource?.code || "OTA"}). OTA reservations cannot be confirmed locally and must be managed through the booking platform.
+                      </p>
+                    </div>
+                  );
+                })()}
+
+                {["CANCELLED", "NO_SHOW"].includes(selectedReservation.status) && (
                   <div className="rounded-xl border border-[#e8ebe5] bg-[#f8f9f6] p-4 text-xs text-[#748077]">
-                    {selectedReservation.status === "PENDING" && (
-                      <p>This reservation is PENDING confirmation. Check-in cannot proceed until the reservation is CONFIRMED.</p>
-                    )}
                     {selectedReservation.status === "CANCELLED" && (
                       <p>This reservation has been CANCELLED. No further front desk operations can be performed.</p>
                     )}
@@ -1888,6 +2107,125 @@ export default function ReservationsPage() {
                 Close
               </button>
             </div>
+
+            {/* Reservation Confirmation Dialog */}
+            {showConfirmModal && (
+              <div
+                className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="confirm-dialog-title"
+                aria-describedby="confirm-dialog-description"
+                onKeyDown={handleConfirmDialogKeyDown}
+              >
+                <div ref={confirmDialogRef} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl space-y-4">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-[#557762]">
+                        Front Desk Confirmation
+                      </p>
+                      <h3 id="confirm-dialog-title" className="mt-1 font-serif text-xl text-[#24382e]">
+                        Confirm Direct Reservation
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={confirming}
+                      onClick={() => setShowConfirmModal(false)}
+                      className="text-xl text-[#59675e] hover:text-[#24382e] disabled:opacity-50"
+                      aria-label="Close reservation confirmation dialog"
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  <div className="space-y-2 rounded-xl bg-[#f8f9f6] p-3 text-xs text-[#435448]">
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Guest:</span>
+                      <span className="font-medium text-[#24382e]">
+                        {guests.find((g) => g.id === selectedReservation.primaryGuestId)?.name ?? "Guest"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Stay period:</span>
+                      <span>{formatDate(selectedReservation.checkInDate)} – {formatDate(selectedReservation.checkOutDate)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Booking source:</span>
+                      <span className="font-semibold text-[#24382e]">
+                        {bookingSources.find((s) => s.id === selectedReservation.bookingSourceId)?.name ?? "Direct"} (DIRECT)
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Room types &amp; quantities:</span>
+                      <span className="font-medium text-[#24382e]">
+                        {reservationRooms.length > 0
+                          ? reservationRooms
+                              .map((r) => {
+                                const rtName = roomTypes.find((t) => t.id === r.roomTypeId)?.name || "Room";
+                                const qty = r.activeQuantity || (r.quantity - r.cancelledQuantity);
+                                return `${qty}x ${rtName}`;
+                              })
+                              .join(", ")
+                          : "1 unit"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Reservation ID:</span>
+                      <span className="font-mono">{selectedReservation.id.slice(0, 8)}…</span>
+                    </div>
+                  </div>
+
+                  <p id="confirm-dialog-description" className="text-xs text-[#59675e] leading-relaxed">
+                    Confirming will transition this reservation from <strong className="font-semibold text-[#24382e]">PENDING</strong> to <strong className="font-semibold text-[#24382e]">CONFIRMED</strong>.
+                    Room availability was already held upon reservation creation; this action confirms the booking and authorizes front-desk processing without assigning a physical room number or checking in the guest.
+                  </p>
+
+                  {actionError && (
+                    <div role="alert" aria-live="polite" className="rounded-xl bg-red-50 p-3 text-xs text-red-700 border border-red-200 space-y-2">
+                      <div>
+                        <p className="font-semibold">Confirmation could not be completed:</p>
+                        <p className="mt-0.5">{actionError}</p>
+                      </div>
+                      {isCurrentReservationUncertain && (
+                        <div className="pt-1">
+                          <p className="text-amber-800">
+                            The connection timed out or an error occurred. Please refresh the reservation state to check current status before re-attempting.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={handleRefreshSelectedReservation}
+                            className="mt-2 rounded-lg bg-white px-3 py-1 text-xs font-medium text-[#24382e] border border-[#dce2d9] hover:bg-[#f5f6f3]"
+                          >
+                            Refresh reservation state
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-end gap-3 pt-2">
+                    <button
+                      type="button"
+                      disabled={confirming}
+                      onClick={() => setShowConfirmModal(false)}
+                      className="rounded-full border border-[#dce2d9] bg-white px-4 py-2 text-xs font-medium text-[#435448] hover:bg-[#f5f6f3] disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={confirming || isCurrentReservationUncertain}
+                      onClick={handleConfirmSubmit}
+                      aria-label="Confirm reservation now"
+                      className="rounded-full bg-[#294638] px-5 py-2 text-xs font-medium text-white hover:bg-[#20382c] transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {confirming ? "Confirming…" : "Confirm Reservation"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Check-In Confirmation Dialog */}
             {showCheckInConfirm && (
