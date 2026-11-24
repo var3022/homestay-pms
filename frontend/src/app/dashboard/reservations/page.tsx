@@ -4,6 +4,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { StaffHeader } from "../StaffHeader";
+import {
+  evaluateReservationAssignmentCompleteness,
+  getActiveReservedQuantity,
+} from "@/lib/reservations/completeness";
 
 type Reservation = {
   id: string;
@@ -130,19 +134,6 @@ function formatDateTimeIST(value?: string | null) {
   }
 }
 
-function getActiveReservedQuantity(room?: {
-  activeQuantity?: number | null;
-  quantity?: number | null;
-  cancelledQuantity?: number | null;
-} | null): number {
-  if (!room) return 0;
-  if (typeof room.activeQuantity === "number" && Number.isFinite(room.activeQuantity)) {
-    return Math.max(0, room.activeQuantity);
-  }
-  const qty = typeof room.quantity === "number" && Number.isFinite(room.quantity) ? room.quantity : 0;
-  const cancelled = typeof room.cancelledQuantity === "number" && Number.isFinite(room.cancelledQuantity) ? room.cancelledQuantity : 0;
-  return Math.max(0, qty - cancelled);
-}
 
 function isUncertainError(message: string): boolean {
   if (!message) return false;
@@ -531,6 +522,8 @@ export default function ReservationsPage() {
     const seq = ++roomDetailsSeqRef.current;
     setRoomDetailsLoading(true);
     setRoomDetailsError("");
+    setReservationRooms([]);
+    setRoomAssignments([]);
 
     try {
       const reservationRoomsResponse = await fetch(
@@ -1682,7 +1675,11 @@ export default function ReservationsPage() {
                       <td className="px-5 py-4">
                         <button
                           type="button"
-                          onClick={() => setSelectedReservation(reservation)}
+                          onClick={() => {
+                            setReservationRooms([]);
+                            setRoomAssignments([]);
+                            setSelectedReservation(reservation);
+                          }}
                           className="text-sm font-medium text-[#294638] hover:underline"
                         >
                           View details →
@@ -1884,13 +1881,20 @@ export default function ReservationsPage() {
 
                           {(() => {
                             const activeQuantity = getActiveReservedQuantity(reservedRoom);
-                            const activeAssignments = roomAssignments.filter(
+                            const unitAssignments = roomAssignments.filter(
                               (item) =>
                                 item.reservationRoomId === reservedRoom.id &&
                                 item.status === "ASSIGNED",
                             );
-                            const assignedCount = activeAssignments.length;
+                            const fullStayAssignments = unitAssignments.filter(
+                              (item) =>
+                                item.assignedFrom === selectedReservation.checkInDate &&
+                                item.assignedUntil === selectedReservation.checkOutDate,
+                            );
+                            const distinctRoomIds = new Set(fullStayAssignments.map((a) => a.roomId));
+                            const assignedCount = distinctRoomIds.size;
                             const unassignedCount = Math.max(0, activeQuantity - assignedCount);
+                            const hasSplitOrPartial = unitAssignments.length > fullStayAssignments.length;
                             const canAssignRooms =
                               ["PENDING", "CONFIRMED"].includes(
                                 selectedReservation.status,
@@ -1903,7 +1907,11 @@ export default function ReservationsPage() {
                                     <p className="text-xs font-semibold uppercase tracking-wider text-[#748077]">
                                       Physical room assignments
                                     </p>
-                                    {assignedCount >= activeQuantity ? (
+                                    {activeQuantity === 0 ? (
+                                      <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-gray-700">
+                                        Cancelled (0 active)
+                                      </span>
+                                    ) : assignedCount >= activeQuantity ? (
                                       <span className="rounded-full bg-green-100 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-green-800">
                                         Fully Assigned ({assignedCount}/{activeQuantity})
                                       </span>
@@ -1914,6 +1922,11 @@ export default function ReservationsPage() {
                                     ) : (
                                       <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-800">
                                         Unassigned (0/{activeQuantity})
+                                      </span>
+                                    )}
+                                    {hasSplitOrPartial && (
+                                      <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-800 border border-amber-200">
+                                        Partial stay dates
                                       </span>
                                     )}
                                   </div>
@@ -1937,13 +1950,13 @@ export default function ReservationsPage() {
                                   )}
                                 </div>
 
-                                {activeAssignments.length === 0 ? (
+                                {unitAssignments.length === 0 ? (
                                   <p className="text-xs text-[#89938b]">
                                     No physical rooms assigned yet. {unassignedCount} unit(s) remaining to assign for stay {formatDate(selectedReservation.checkInDate)} – {formatDate(selectedReservation.checkOutDate)}.
                                   </p>
                                 ) : (
                                   <div className="space-y-2">
-                                    {activeAssignments.map((assignment) => {
+                                    {unitAssignments.map((assignment) => {
                                       const physicalRoom = physicalRooms.find(
                                         (room) => room.id === assignment.roomId,
                                       );
@@ -2092,14 +2105,15 @@ export default function ReservationsPage() {
                 </h3>
 
                 {selectedReservation.status === "CONFIRMED" && (() => {
-                  const totalActiveUnits = reservationRooms.reduce(
-                    (sum, r) => sum + getActiveReservedQuantity(r),
-                    0
+                  const completeness = evaluateReservationAssignmentCompleteness(
+                    selectedReservation,
+                    reservationRooms,
+                    roomAssignments,
+                    physicalRooms,
+                    roomTypes,
+                    roomDetailsLoading,
+                    roomDetailsError
                   );
-                  const totalAssignedRooms = roomAssignments.filter(
-                    (a) => a.status === "ASSIGNED"
-                  ).length;
-                  const hasIncompleteAssignments = totalAssignedRooms < totalActiveUnits;
 
                   return (
                     <div className="rounded-xl border border-[#dce2d9] bg-[#f8f9f6] p-4 space-y-3">
@@ -2115,19 +2129,24 @@ export default function ReservationsPage() {
                       <div className="rounded-lg bg-white p-3 border border-[#e8ebe5] text-xs space-y-1.5">
                         <div className="flex justify-between text-[#435448]">
                           <span>Reserved active room units:</span>
-                          <span className="font-semibold">{totalActiveUnits}</span>
+                          <span className="font-semibold">{completeness.totalActiveUnits}</span>
                         </div>
                         <div className="flex justify-between text-[#435448]">
                           <span>Assigned physical rooms:</span>
-                          <span className="font-semibold">{totalAssignedRooms}</span>
+                          <span className="font-semibold">{completeness.totalValidAssignedUnits}</span>
                         </div>
-                        {hasIncompleteAssignments && (
+                        {completeness.notice && (
                           <p className="mt-1 text-amber-700 font-medium">
-                            Notice: All {totalActiveUnits} active reserved unit(s) must be assigned before check-in ({totalAssignedRooms} currently assigned).
+                            Notice: {completeness.notice}
                           </p>
                         )}
                         {physicalRooms.some(
-                          (p) => p.housekeepingStatus && p.housekeepingStatus !== "CLEAN"
+                          (p) =>
+                            roomAssignments.some(
+                              (a) => a.roomId === p.id && a.status === "ASSIGNED"
+                            ) &&
+                            p.housekeepingStatus &&
+                            p.housekeepingStatus !== "CLEAN"
                         ) && (
                           <p className="mt-1 text-amber-700 font-medium">
                             Notice: One or more assigned physical rooms are not marked CLEAN. Backend check-in validation will enforce cleanliness.
@@ -2141,7 +2160,7 @@ export default function ReservationsPage() {
                         </p>
                         <button
                           type="button"
-                          disabled={hasIncompleteAssignments || isCurrentReservationUncertain}
+                          disabled={!completeness.canCheckIn || isCurrentReservationUncertain}
                           onClick={() => {
                             setActionError("");
                             setShowCheckInConfirm(true);

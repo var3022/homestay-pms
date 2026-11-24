@@ -11,6 +11,10 @@ import {
   GET as getAssignmentsRoute,
   POST as createAssignmentRoute,
 } from "../src/app/api/room-assignments/route.ts";
+import {
+  evaluateReservationAssignmentCompleteness,
+  getActiveReservedQuantity,
+} from "../src/lib/reservations/completeness.ts";
 
 describe("PMS Front Desk Room Assignment BFF & UI Integration Test Suite", () => {
   let mockServer;
@@ -666,25 +670,23 @@ describe("PMS Front Desk Room Assignment BFF & UI Integration Test Suite", () =>
   });
 
   // =========================================================================
-  // Part 2: Front Desk UI Logic & State Calculations
+  // Part 2: Front Desk UI Logic, Per-Category Completeness & State Calculations
   // =========================================================================
 
-  function getActiveReservedQuantity(room) {
-    if (!room) return 0;
-    if (typeof room.activeQuantity === "number" && Number.isFinite(room.activeQuantity)) {
-      return Math.max(0, room.activeQuantity);
-    }
-    const qty = typeof room.quantity === "number" && Number.isFinite(room.quantity) ? room.quantity : 0;
-    const cancelled = typeof room.cancelledQuantity === "number" && Number.isFinite(room.cancelledQuantity) ? room.cancelledQuantity : 0;
-    return Math.max(0, qty - cancelled);
-  }
-
-  function calculateAssignmentStatus(reservedRoom, assignments) {
+  function calculateAssignmentStatus(reservedRoom, assignments, reservation) {
     const activeQuantity = getActiveReservedQuantity(reservedRoom);
-    const activeAssignments = (assignments || []).filter(
+    const unitAssignments = (assignments || []).filter(
       (a) => a.reservationRoomId === reservedRoom.id && a.status === "ASSIGNED"
     );
-    const assignedCount = activeAssignments.length;
+    const fullStayAssignments = reservation
+      ? unitAssignments.filter(
+          (a) =>
+            a.assignedFrom === reservation.checkInDate &&
+            a.assignedUntil === reservation.checkOutDate
+        )
+      : unitAssignments;
+    const distinctRoomIds = new Set(fullStayAssignments.map((a) => a.roomId));
+    const assignedCount = distinctRoomIds.size;
     const unassignedCount = Math.max(0, activeQuantity - assignedCount);
 
     let status = "UNASSIGNED";
@@ -730,7 +732,7 @@ describe("PMS Front Desk Room Assignment BFF & UI Integration Test Suite", () =>
     const reservedRoom = { id: "rr-1", quantity: 2, cancelledQuantity: 0 };
     const assignments = [
       { id: "a-1", reservationRoomId: "rr-1", status: "RELEASED" },
-      { id: "a-2", reservationRoomId: "rr-1", status: "ASSIGNED" },
+      { id: "a-2", reservationRoomId: "rr-1", status: "ASSIGNED", roomId: "r-1" },
     ];
     const status = calculateAssignmentStatus(reservedRoom, assignments);
     assert.equal(status.assignedCount, 1);
@@ -741,8 +743,8 @@ describe("PMS Front Desk Room Assignment BFF & UI Integration Test Suite", () =>
   it("18. UI state classification: identifies fully assigned reservation room", () => {
     const reservedRoom = { id: "rr-1", quantity: 2, cancelledQuantity: 0 };
     const assignments = [
-      { id: "a-1", reservationRoomId: "rr-1", status: "ASSIGNED" },
-      { id: "a-2", reservationRoomId: "rr-1", status: "ASSIGNED" },
+      { id: "a-1", reservationRoomId: "rr-1", status: "ASSIGNED", roomId: "r-1" },
+      { id: "a-2", reservationRoomId: "rr-1", status: "ASSIGNED", roomId: "r-2" },
     ];
     const status = calculateAssignmentStatus(reservedRoom, assignments);
     assert.equal(status.assignedCount, 2);
@@ -804,41 +806,232 @@ describe("PMS Front Desk Room Assignment BFF & UI Integration Test Suite", () =>
   });
 
   it("21. check-in blocking: enforces full physical room assignment before check-in", () => {
+    const res = { id: "res-1", checkInDate: "2026-12-01", checkOutDate: "2026-12-05" };
     const reservationRooms = [
-      { id: "rr-1", activeQuantity: 2 },
-      { id: "rr-2", activeQuantity: 1 },
+      { id: "rr-1", roomTypeId: "rt-1", activeQuantity: 2 },
+      { id: "rr-2", roomTypeId: "rt-2", activeQuantity: 1 },
     ];
-    const totalActiveUnits = reservationRooms.reduce(
-      (sum, r) => sum + getActiveReservedQuantity(r),
-      0
-    );
-    assert.equal(totalActiveUnits, 3);
+    const roomTypes = [
+      { id: "rt-1", name: "Deluxe Suite" },
+      { id: "rt-2", name: "Standard Room" },
+    ];
 
     // Incomplete assignments (1 assigned out of 3)
     const incompleteAssignments = [
-      { id: "a-1", reservationRoomId: "rr-1", roomId: "r-1", status: "ASSIGNED" },
+      { id: "a-1", reservationRoomId: "rr-1", roomId: "r-1", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
     ];
-    const assignedCountIncomplete = incompleteAssignments.filter((a) => a.status === "ASSIGNED").length;
-    const hasIncomplete = assignedCountIncomplete < totalActiveUnits;
-    assert.equal(hasIncomplete, true);
-    const checkInDisabledIncomplete = hasIncomplete || false;
-    assert.equal(checkInDisabledIncomplete, true);
+    const incompleteResult = evaluateReservationAssignmentCompleteness(res, reservationRooms, incompleteAssignments, [], roomTypes);
+    assert.equal(incompleteResult.canCheckIn, false);
+    assert.equal(incompleteResult.isComplete, false);
+    assert.ok(incompleteResult.notice.includes("Deluxe Suite"));
+    assert.ok(incompleteResult.notice.includes("Standard Room"));
 
     // Complete assignments (3 assigned out of 3)
     const completeAssignments = [
-      { id: "a-1", reservationRoomId: "rr-1", roomId: "r-1", status: "ASSIGNED" },
-      { id: "a-2", reservationRoomId: "rr-1", roomId: "r-2", status: "ASSIGNED" },
-      { id: "a-3", reservationRoomId: "rr-2", roomId: "r-3", status: "ASSIGNED" },
+      { id: "a-1", reservationRoomId: "rr-1", roomId: "r-1", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+      { id: "a-2", reservationRoomId: "rr-1", roomId: "r-2", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+      { id: "a-3", reservationRoomId: "rr-2", roomId: "r-3", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
     ];
-    const assignedCountComplete = completeAssignments.filter((a) => a.status === "ASSIGNED").length;
-    const hasComplete = assignedCountComplete < totalActiveUnits;
-    assert.equal(hasComplete, false);
-    const checkInDisabledComplete = hasComplete || false;
-    assert.equal(checkInDisabledComplete, false);
+    const completeResult = evaluateReservationAssignmentCompleteness(res, reservationRooms, completeAssignments, [], roomTypes);
+    assert.equal(completeResult.canCheckIn, true);
+    assert.equal(completeResult.isComplete, true);
+    assert.equal(completeResult.notice, null);
+  });
 
-    // Complete assignments but uncertain reservation blocks check-in
-    const checkInDisabledUncertain = hasComplete || true;
-    assert.equal(checkInDisabledUncertain, true);
+  it("22. multiple room categories: verifies per-category assignment completeness", () => {
+    const res = { id: "res-22", checkInDate: "2026-12-01", checkOutDate: "2026-12-05" };
+    const reservationRooms = [
+      { id: "rr-deluxe", roomTypeId: "rt-deluxe", activeQuantity: 2 },
+      { id: "rr-suite", roomTypeId: "rt-suite", activeQuantity: 1 },
+      { id: "rr-standard", roomTypeId: "rt-standard", activeQuantity: 1 },
+    ];
+    const roomTypes = [
+      { id: "rt-deluxe", name: "Deluxe" },
+      { id: "rt-suite", name: "Suite" },
+      { id: "rt-standard", name: "Standard" },
+    ];
+    const assignments = [
+      { id: "a-1", reservationRoomId: "rr-deluxe", roomId: "room-101", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+      { id: "a-2", reservationRoomId: "rr-deluxe", roomId: "room-102", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+      { id: "a-3", reservationRoomId: "rr-suite", roomId: "room-201", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+      { id: "a-4", reservationRoomId: "rr-standard", roomId: "room-301", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+    ];
+
+    const result = evaluateReservationAssignmentCompleteness(res, reservationRooms, assignments, [], roomTypes);
+    assert.equal(result.isComplete, true);
+    assert.equal(result.canCheckIn, true);
+    assert.equal(result.totalActiveUnits, 4);
+    assert.equal(result.totalValidAssignedUnits, 4);
+    assert.equal(result.perRoomTypeDetails.length, 3);
+    assert.ok(result.perRoomTypeDetails.every((d) => d.isFullyAssigned));
+  });
+
+  it("23. partially assigned categories: blocks check-in and identifies exact underassigned category", () => {
+    const res = { id: "res-23", checkInDate: "2026-12-01", checkOutDate: "2026-12-05" };
+    const reservationRooms = [
+      { id: "rr-1", roomTypeId: "rt-deluxe", activeQuantity: 2 },
+      { id: "rr-2", roomTypeId: "rt-suite", activeQuantity: 1 },
+    ];
+    const roomTypes = [
+      { id: "rt-deluxe", name: "Deluxe Room" },
+      { id: "rt-suite", name: "Executive Suite" },
+    ];
+    // Deluxe has 2/2, Suite has 0/1
+    const assignments = [
+      { id: "a-1", reservationRoomId: "rr-1", roomId: "room-101", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+      { id: "a-2", reservationRoomId: "rr-1", roomId: "room-102", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+    ];
+
+    const result = evaluateReservationAssignmentCompleteness(res, reservationRooms, assignments, [], roomTypes);
+    assert.equal(result.isComplete, false);
+    assert.equal(result.canCheckIn, false);
+    assert.equal(result.totalActiveUnits, 3);
+    assert.equal(result.totalValidAssignedUnits, 2);
+    assert.equal(result.unassignedActiveUnits, 1);
+    assert.ok(result.notice.includes("Executive Suite (0/1 assigned)"));
+    assert.ok(!result.notice.includes("Deluxe Room"));
+  });
+
+  it("24. overassigned category safety: prevents overassigned category from masking underassigned category", () => {
+    const res = { id: "res-24", checkInDate: "2026-12-01", checkOutDate: "2026-12-05" };
+    const reservationRooms = [
+      { id: "rr-1", roomTypeId: "rt-1", activeQuantity: 1 },
+      { id: "rr-2", roomTypeId: "rt-2", activeQuantity: 1 },
+    ];
+    const roomTypes = [
+      { id: "rt-1", name: "Category A" },
+      { id: "rt-2", name: "Category B" },
+    ];
+    // Total active units = 2. Category A has 2 assignments, Category B has 0.
+    // Aggregate count is 2 (equals total units), but Category B is underassigned!
+    const assignments = [
+      { id: "a-1", reservationRoomId: "rr-1", roomId: "room-101", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+      { id: "a-2", reservationRoomId: "rr-1", roomId: "room-102", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+    ];
+
+    const result = evaluateReservationAssignmentCompleteness(res, reservationRooms, assignments, [], roomTypes);
+    assert.equal(result.isComplete, false, "Aggregate total match MUST NOT allow check-in when category B is underassigned");
+    assert.equal(result.canCheckIn, false);
+    assert.ok(result.notice.includes("Category B (0/1 assigned)"));
+    assert.ok(result.notice.includes("Category A (overassigned: 2/1)"));
+  });
+
+  it("25. duplicate physical room IDs: blocks check-in when same physical room is assigned twice", () => {
+    const res = { id: "res-25", checkInDate: "2026-12-01", checkOutDate: "2026-12-05" };
+    // Scenario A: Duplicate physical room within the same unit
+    const reservationRooms = [
+      { id: "rr-1", roomTypeId: "rt-1", activeQuantity: 2 },
+    ];
+    const duplicateInUnit = [
+      { id: "a-1", reservationRoomId: "rr-1", roomId: "room-dup", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+      { id: "a-2", reservationRoomId: "rr-1", roomId: "room-dup", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+    ];
+    const resA = evaluateReservationAssignmentCompleteness(res, reservationRooms, duplicateInUnit, []);
+    assert.equal(resA.canCheckIn, false);
+    assert.equal(resA.totalValidAssignedUnits, 1);
+
+    // Scenario B: Same physical room assigned across different reservation rooms
+    const multiRooms = [
+      { id: "rr-1", roomTypeId: "rt-1", activeQuantity: 1 },
+      { id: "rr-2", roomTypeId: "rt-2", activeQuantity: 1 },
+    ];
+    const duplicateAcrossRooms = [
+      { id: "a-1", reservationRoomId: "rr-1", roomId: "room-dup", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+      { id: "a-2", reservationRoomId: "rr-2", roomId: "room-dup", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+    ];
+    const resB = evaluateReservationAssignmentCompleteness(res, multiRooms, duplicateAcrossRooms, []);
+    assert.equal(resB.canCheckIn, false);
+    assert.ok(resB.notice.includes("Duplicate physical room assignment detected"));
+  });
+
+  it("26. date range coverage: blocks check-in for partial stay or split-stay date assignments", () => {
+    const res = { id: "res-26", checkInDate: "2026-12-01", checkOutDate: "2026-12-05" };
+    const reservationRooms = [{ id: "rr-1", roomTypeId: "rt-1", activeQuantity: 1 }];
+    // Assignment only covers until 2026-12-03 (partial stay)
+    const partialAssignments = [
+      { id: "a-1", reservationRoomId: "rr-1", roomId: "room-101", assignedFrom: "2026-12-01", assignedUntil: "2026-12-03", status: "ASSIGNED" },
+    ];
+
+    const result = evaluateReservationAssignmentCompleteness(res, reservationRooms, partialAssignments, []);
+    assert.equal(result.canCheckIn, false);
+    assert.equal(result.isComplete, false);
+    assert.ok(result.notice.includes("do not cover the full stay period"));
+  });
+
+  it("27. cross-reservation and cancelled unit isolation: ignores unrelated and cancelled room assignments", () => {
+    const res = { id: "res-27", checkInDate: "2026-12-01", checkOutDate: "2026-12-05" };
+    const reservationRooms = [
+      { id: "rr-active", roomTypeId: "rt-1", activeQuantity: 1 },
+      { id: "rr-cancelled", roomTypeId: "rt-2", activeQuantity: 0, status: "CANCELLED" },
+    ];
+    // Assignments include an unrelated reservationRoomId and an assignment for the cancelled room
+    const assignments = [
+      { id: "a-unrelated", reservationRoomId: "rr-foreign", roomId: "room-999", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+      { id: "a-cancelled", reservationRoomId: "rr-cancelled", roomId: "room-888", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+      { id: "a-valid", reservationRoomId: "rr-active", roomId: "room-101", assignedFrom: "2026-12-01", assignedUntil: "2026-12-05", status: "ASSIGNED" },
+    ];
+
+    const result = evaluateReservationAssignmentCompleteness(res, reservationRooms, assignments, []);
+    assert.equal(result.canCheckIn, true);
+    assert.equal(result.totalActiveUnits, 1);
+    assert.equal(result.totalValidAssignedUnits, 1);
+  });
+
+  it("28. zero active units check: blocks check-in when reservation has no active rooms", () => {
+    const res = { id: "res-28", checkInDate: "2026-12-01", checkOutDate: "2026-12-05" };
+    const allCancelledRooms = [
+      { id: "rr-1", roomTypeId: "rt-1", activeQuantity: 0, status: "CANCELLED" },
+    ];
+    const result = evaluateReservationAssignmentCompleteness(res, allCancelledRooms, []);
+    assert.equal(result.status, "NO_ACTIVE_ROOMS");
+    assert.equal(result.canCheckIn, false);
+    assert.ok(result.notice.includes("no active rooms"));
+  });
+
+  it("29. loading and error states: blocks check-in while data is loading or when loading fails", () => {
+    const res = { id: "res-29", checkInDate: "2026-12-01", checkOutDate: "2026-12-05" };
+    const rooms = [{ id: "rr-1", roomTypeId: "rt-1", activeQuantity: 1 }];
+
+    // Loading state
+    const loadingResult = evaluateReservationAssignmentCompleteness(res, rooms, [], [], [], true, "");
+    assert.equal(loadingResult.status, "LOADING");
+    assert.equal(loadingResult.canCheckIn, false);
+    assert.ok(loadingResult.notice.includes("Loading"));
+
+    // Error state
+    const errorResult = evaluateReservationAssignmentCompleteness(res, rooms, [], [], [], false, "Network timeout 504");
+    assert.equal(errorResult.status, "ERROR");
+    assert.equal(errorResult.canCheckIn, false);
+    assert.ok(errorResult.notice.includes("Network timeout 504"));
+  });
+
+  it("30. out-of-order stale response handling: sequence counter discards stale responses", () => {
+    let currentSeq = 0;
+    let roomAssignmentsState = [];
+
+    function handleMockResponse(seq, newAssignments) {
+      if (seq < currentSeq) {
+        // Discard stale out-of-order response
+        return false;
+      }
+      roomAssignmentsState = newAssignments;
+      return true;
+    }
+
+    // Request 1 dispatched
+    const seq1 = ++currentSeq;
+    // Request 2 dispatched before Request 1 resolved
+    const seq2 = ++currentSeq;
+
+    // Request 2 finishes first
+    const applied2 = handleMockResponse(seq2, [{ id: "a-fresh" }]);
+    assert.equal(applied2, true);
+    assert.equal(roomAssignmentsState[0].id, "a-fresh");
+
+    // Request 1 finishes later (stale out-of-order response)
+    const applied1 = handleMockResponse(seq1, [{ id: "a-stale" }]);
+    assert.equal(applied1, false, "Stale response must be discarded");
+    assert.equal(roomAssignmentsState[0].id, "a-fresh", "State must retain fresh assignments");
   });
 
   // =========================================================================
@@ -858,7 +1051,7 @@ describe("PMS Front Desk Room Assignment BFF & UI Integration Test Suite", () =>
     );
   }
 
-  it("22. uncertainty gate: blocks duplicate assignment attempt for affected reservation and room", () => {
+  it("31. uncertainty gate: blocks duplicate assignment attempt for affected reservation and room", () => {
     const resId = "res-uncertain-1";
     const attemptKey = "rr-1:room-101";
     const uncertainAttempts = new Set();
@@ -878,7 +1071,7 @@ describe("PMS Front Desk Room Assignment BFF & UI Integration Test Suite", () =>
     assert.equal(uncertainReservations.has(resId), true);
   });
 
-  it("23. uncertainty recovery: refresh reconciles state and clears uncertainty gate", () => {
+  it("32. uncertainty recovery: refresh reconciles state and clears uncertainty gate", () => {
     const resId = "res-uncertain-2";
     let uncertainAttempts = new Set(["rr-1:room-102"]);
     let uncertainReservations = new Set([resId]);
@@ -894,7 +1087,7 @@ describe("PMS Front Desk Room Assignment BFF & UI Integration Test Suite", () =>
     assert.equal(uncertainAttempts.size, 0);
   });
 
-  it("24. failed refresh preserves uncertainty gate", () => {
+  it("33. failed refresh preserves uncertainty gate", () => {
     const resId = "res-uncertain-3";
     const attemptKey = "rr-1:room-103";
     const uncertainAttempts = new Set([attemptKey]);
@@ -911,7 +1104,7 @@ describe("PMS Front Desk Room Assignment BFF & UI Integration Test Suite", () =>
     assert.equal(uncertainAttempts.has(attemptKey), true);
   });
 
-  it("25. WAI-ARIA accessibility contracts: room assignment dialog declares required semantics", () => {
+  it("34. WAI-ARIA accessibility contracts: room assignment dialog declares required semantics", () => {
     const dialogAttrs = {
       role: "dialog",
       "aria-modal": "true",
