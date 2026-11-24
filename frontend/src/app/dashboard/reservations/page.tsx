@@ -80,8 +80,10 @@ type RoomAssignment = {
 
 type PhysicalRoom = {
   id: string;
+  propertyId?: string;
   roomNumber: string;
-  name?: string;
+  name?: string | null;
+  floor?: string | null;
   roomTypeId: string;
   status?: string;
   housekeepingStatus?: string;
@@ -126,6 +128,20 @@ function formatDateTimeIST(value?: string | null) {
   } catch {
     return value;
   }
+}
+
+function getActiveReservedQuantity(room?: {
+  activeQuantity?: number | null;
+  quantity?: number | null;
+  cancelledQuantity?: number | null;
+} | null): number {
+  if (!room) return 0;
+  if (typeof room.activeQuantity === "number" && Number.isFinite(room.activeQuantity)) {
+    return Math.max(0, room.activeQuantity);
+  }
+  const qty = typeof room.quantity === "number" && Number.isFinite(room.quantity) ? room.quantity : 0;
+  const cancelled = typeof room.cancelledQuantity === "number" && Number.isFinite(room.cancelledQuantity) ? room.cancelledQuantity : 0;
+  return Math.max(0, qty - cancelled);
 }
 
 function isUncertainError(message: string): boolean {
@@ -270,6 +286,13 @@ export default function ReservationsPage() {
   const [showCheckInConfirm, setShowCheckInConfirm] = useState(false);
   const [showCheckOutConfirm, setShowCheckOutConfirm] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const [assigningReservationRoom, setAssigningReservationRoom] = useState<ReservationRoom | null>(null);
+  const [selectedPhysicalRoomId, setSelectedPhysicalRoomId] = useState("");
+  const [assigningRoom, setAssigningRoom] = useState(false);
+  const [assignError, setAssignError] = useState("");
+  const [uncertainAssignmentAttempts, setUncertainAssignmentAttempts] = useState<Set<string>>(new Set());
+
   const [actionError, setActionError] = useState("");
   const [actionSuccess, setActionSuccess] = useState("");
   const [uncertainOutcome, setUncertainOutcome] = useState(false);
@@ -277,7 +300,10 @@ export default function ReservationsPage() {
 
   const confirmTriggerRef = useRef<HTMLButtonElement | null>(null);
   const confirmDialogRef = useRef<HTMLDivElement | null>(null);
+  const assignTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const assignDialogRef = useRef<HTMLDivElement | null>(null);
   const listRequestSeqRef = useRef(0);
+  const roomDetailsSeqRef = useRef(0);
 
   const isCurrentReservationUncertain = Boolean(
     selectedReservation &&
@@ -344,6 +370,58 @@ export default function ReservationsPage() {
       }
     },
     [confirming]
+  );
+
+  useEffect(() => {
+    if (showAssignModal) {
+      const timer = window.setTimeout(() => {
+        if (assignDialogRef.current) {
+          const focusable = assignDialogRef.current.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          );
+          if (focusable.length > 0) {
+            focusable[0].focus();
+          }
+        }
+      }, 0);
+      return () => window.clearTimeout(timer);
+    } else {
+      if (assignTriggerRef.current) {
+        assignTriggerRef.current.focus();
+      }
+    }
+  }, [showAssignModal]);
+
+  const handleAssignDialogKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (e.key === "Escape" && !assigningRoom) {
+        e.stopPropagation();
+        setShowAssignModal(false);
+        return;
+      }
+      if (e.key === "Tab" && assignDialogRef.current) {
+        const focusable = Array.from(
+          assignDialogRef.current.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          )
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey) {
+          if (document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else {
+          if (document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      }
+    },
+    [assigningRoom]
   );
   const [guestMode, setGuestMode] = useState<"existing" | "new">("existing");
   const [primaryGuestId, setPrimaryGuestId] = useState("");
@@ -449,72 +527,67 @@ export default function ReservationsPage() {
 
     return () => window.clearTimeout(timer);
   }, [loadReservations, loadFormOptions]);
+  const loadRoomDetails = useCallback(async (reservationId: string) => {
+    const seq = ++roomDetailsSeqRef.current;
+    setRoomDetailsLoading(true);
+    setRoomDetailsError("");
+
+    try {
+      const reservationRoomsResponse = await fetch(
+        `/api/reservation-rooms?reservationId=${encodeURIComponent(reservationId)}`,
+        { cache: "no-store" },
+      );
+
+      const reservationRoomsData = await readResponse(reservationRoomsResponse);
+      const roomList = unwrapList<ReservationRoom>(reservationRoomsData);
+
+      const [roomsResponse, ...assignmentResponses] = await Promise.all([
+        fetch("/api/rooms", { cache: "no-store" }),
+        ...roomList.map((room) =>
+          fetch(
+            `/api/room-assignments?reservationRoomId=${encodeURIComponent(room.id)}`,
+            { cache: "no-store" },
+          ),
+        ),
+      ]);
+
+      const roomsData = await readResponse(roomsResponse);
+      const physicalRoomList = unwrapList<PhysicalRoom>(roomsData);
+
+      const assignmentLists = await Promise.all(
+        assignmentResponses.map(async (response) =>
+          unwrapList<RoomAssignment>(await readResponse(response)),
+        ),
+      );
+
+      if (seq < roomDetailsSeqRef.current) return;
+
+      setReservationRooms(roomList);
+      setPhysicalRooms(physicalRoomList);
+      setRoomAssignments(assignmentLists.flat());
+    } catch (err) {
+      if (seq < roomDetailsSeqRef.current) return;
+      const message =
+        err instanceof Error ? err.message : "Unable to load room details.";
+      setRoomDetailsError(message);
+      throw err;
+    } finally {
+      if (seq >= roomDetailsSeqRef.current) {
+        setRoomDetailsLoading(false);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     if (!selectedReservation) {
       return;
     }
+    const timer = window.setTimeout(() => {
+      void loadRoomDetails(selectedReservation.id).catch(() => {});
+    }, 0);
 
-    let cancelled = false;
-    const reservationId = selectedReservation.id;
-
-    async function loadRoomDetails() {
-      setRoomDetailsLoading(true);
-      setRoomDetailsError("");
-
-      try {
-        const reservationRoomsResponse = await fetch(
-          `/api/reservation-rooms?reservationId=${encodeURIComponent(reservationId)}`,
-          { cache: "no-store" },
-        );
-
-        const reservationRoomsData = await readResponse(reservationRoomsResponse);
-        const roomList = unwrapList<ReservationRoom>(reservationRoomsData);
-
-        const [roomsResponse, ...assignmentResponses] = await Promise.all([
-          fetch("/api/rooms", { cache: "no-store" }),
-          ...roomList.map((room) =>
-            fetch(
-              `/api/room-assignments?reservationRoomId=${encodeURIComponent(room.id)}`,
-              { cache: "no-store" },
-            ),
-          ),
-        ]);
-
-        const roomsData = await readResponse(roomsResponse);
-        const physicalRoomList = unwrapList<PhysicalRoom>(roomsData);
-
-        const assignmentLists = await Promise.all(
-          assignmentResponses.map(async (response) =>
-            unwrapList<RoomAssignment>(await readResponse(response)),
-          ),
-        );
-
-        if (!cancelled) {
-          setReservationRooms(roomList);
-          setPhysicalRooms(physicalRoomList);
-          setRoomAssignments(assignmentLists.flat());
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setRoomDetailsError(
-            err instanceof Error
-              ? err.message
-              : "Unable to load room details.",
-          );
-        }
-      } finally {
-        if (!cancelled) {
-          setRoomDetailsLoading(false);
-        }
-      }
-    }
-
-    void loadRoomDetails();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedReservation]);
+    return () => window.clearTimeout(timer);
+  }, [selectedReservation, loadRoomDetails]);
 
   const filteredReservations =
     filter === "ALL"
@@ -696,9 +769,16 @@ export default function ReservationsPage() {
       void loadReservations();
     }
     setSelectedReservation(null);
+    setReservationRooms([]);
+    setRoomAssignments([]);
+    roomDetailsSeqRef.current++;
     setShowConfirmModal(false);
     setShowCheckInConfirm(false);
     setShowCheckOutConfirm(false);
+    setShowAssignModal(false);
+    setAssigningReservationRoom(null);
+    setSelectedPhysicalRoomId("");
+    setAssignError("");
     setActionError("");
     setUncertainOutcome(false);
   }, [uncertainOutcome, selectedReservation, uncertainReservationIds, loadReservations]);
@@ -840,6 +920,82 @@ export default function ReservationsPage() {
     }
   }
 
+  async function handleAssignRoomSubmit() {
+    if (
+      !selectedReservation ||
+      !assigningReservationRoom ||
+      !selectedPhysicalRoomId ||
+      assigningRoom
+    ) {
+      return;
+    }
+
+    if (!["PENDING", "CONFIRMED"].includes(selectedReservation.status)) {
+      setAssignError(
+        "Room assignment is only permitted for pre-check-in reservations (PENDING or CONFIRMED)."
+      );
+      return;
+    }
+
+    const resId = selectedReservation.id;
+    const attemptKey = `${assigningReservationRoom.id}:${selectedPhysicalRoomId}`;
+
+    if (
+      uncertainReservationIds.has(resId) ||
+      uncertainAssignmentAttempts.has(attemptKey)
+    ) {
+      return;
+    }
+
+    setAssigningRoom(true);
+    setAssignError("");
+    setUncertainOutcome(false);
+    listRequestSeqRef.current++;
+
+    try {
+      const response = await fetch("/api/room-assignments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-PMS-Client": "staff-web",
+        },
+        body: JSON.stringify({
+          reservationRoomId: assigningReservationRoom.id,
+          roomId: selectedPhysicalRoomId,
+          assignedFrom: selectedReservation.checkInDate,
+          assignedUntil: selectedReservation.checkOutDate,
+        }),
+      });
+
+      const data = await readResponse(response);
+      const createdAssignment = unwrapObject<RoomAssignment>(data);
+
+      setRoomAssignments((prev) => [
+        ...prev.filter((a) => a.id !== createdAssignment.id),
+        createdAssignment,
+      ]);
+
+      await loadRoomDetails(resId);
+      setShowAssignModal(false);
+
+      const assignedPhysical = physicalRooms.find((r) => r.id === selectedPhysicalRoomId);
+      const roomNum = assignedPhysical ? `Room ${assignedPhysical.roomNumber}` : "Room";
+      setActionSuccess(`${roomNum} assigned successfully for the stay.`);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to assign room.";
+      setAssignError(message);
+
+      if (isUncertainError(message)) {
+        setUncertainOutcome(true);
+        setUncertainReservationIds((prev) => new Set(prev).add(resId));
+        setUncertainAssignmentAttempts((prev) => new Set(prev).add(attemptKey));
+      }
+    } finally {
+      setAssigningRoom(false);
+    }
+  }
+
   async function handleRefreshSelectedReservation() {
     if (!selectedReservation) return;
     const resId = selectedReservation.id;
@@ -853,11 +1009,13 @@ export default function ReservationsPage() {
       const found = list.find((r) => r.id === resId);
       if (found) {
         setSelectedReservation(found);
+        await loadRoomDetails(resId);
         setUncertainReservationIds((prev) => {
           const next = new Set(prev);
           next.delete(resId);
           return next;
         });
+        setUncertainAssignmentAttempts(new Set());
         if (showConfirmModal && found.status !== "PENDING") {
           setShowConfirmModal(false);
         }
@@ -867,8 +1025,12 @@ export default function ReservationsPage() {
         if (showCheckOutConfirm && found.status !== "CHECKED_IN") {
           setShowCheckOutConfirm(false);
         }
+        if (!["PENDING", "CONFIRMED"].includes(found.status)) {
+          setShowAssignModal(false);
+        }
       }
       setActionError("");
+      setAssignError("");
       setUncertainOutcome(false);
     } catch (err) {
       if (seq < listRequestSeqRef.current) return;
@@ -1672,12 +1834,6 @@ export default function ReservationsPage() {
                         (item) => item.id === reservedRoom.roomTypeId,
                       );
 
-                      const assignments = roomAssignments.filter(
-                        (item) =>
-                          item.reservationRoomId === reservedRoom.id &&
-                          item.status !== "RELEASED",
-                      );
-
                       const unitPrice = Number(reservedRoom.unitPrice);
                       const subtotal =
                         reservedRoom.subtotal == null
@@ -1695,9 +1851,9 @@ export default function ReservationsPage() {
                                 {roomType?.name ?? "Room type unavailable"}
                               </p>
                               <p className="mt-1 text-sm text-[#748077]">
-                                Quantity: {reservedRoom.activeQuantity}
+                                Quantity: {getActiveReservedQuantity(reservedRoom)}
                                 {reservedRoom.cancelledQuantity > 0 &&
-                                   ` · Cancelled: ${reservedRoom.cancelledQuantity}`}
+                                  ` · Cancelled: ${reservedRoom.cancelledQuantity}`}
                               </p>
                             </div>
 
@@ -1726,57 +1882,116 @@ export default function ReservationsPage() {
                             </div>
                           </div>
 
-                          <div className="mt-4 border-t border-[#e8ebe5] pt-3">
-                            <p className="text-xs font-medium text-[#748077]">
-                              Physical room assignments
-                            </p>
+                          {(() => {
+                            const activeQuantity = getActiveReservedQuantity(reservedRoom);
+                            const activeAssignments = roomAssignments.filter(
+                              (item) =>
+                                item.reservationRoomId === reservedRoom.id &&
+                                item.status === "ASSIGNED",
+                            );
+                            const assignedCount = activeAssignments.length;
+                            const unassignedCount = Math.max(0, activeQuantity - assignedCount);
+                            const canAssignRooms =
+                              ["PENDING", "CONFIRMED"].includes(
+                                selectedReservation.status,
+                              ) && unassignedCount > 0;
 
-                            {assignments.length === 0 ? (
-                              <p className="mt-2 text-sm text-[#89938b]">
-                                Room not assigned yet
-                              </p>
-                            ) : (
-                              <div className="mt-2 space-y-2">
-                                {assignments.map((assignment) => {
-                                  const physicalRoom = physicalRooms.find(
-                                    (room) => room.id === assignment.roomId,
-                                  );
+                            return (
+                              <div className="mt-4 border-t border-[#e8ebe5] pt-3 space-y-3">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <div className="flex items-center gap-2">
+                                    <p className="text-xs font-semibold uppercase tracking-wider text-[#748077]">
+                                      Physical room assignments
+                                    </p>
+                                    {assignedCount >= activeQuantity ? (
+                                      <span className="rounded-full bg-green-100 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-green-800">
+                                        Fully Assigned ({assignedCount}/{activeQuantity})
+                                      </span>
+                                    ) : assignedCount > 0 ? (
+                                      <span className="rounded-full bg-blue-100 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-blue-800">
+                                        Partially Assigned ({assignedCount}/{activeQuantity})
+                                      </span>
+                                    ) : (
+                                      <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-800">
+                                        Unassigned (0/{activeQuantity})
+                                      </span>
+                                    )}
+                                  </div>
 
-                                  return (
-                                    <div
-                                      key={assignment.id}
-                                      className="rounded-lg bg-[#f8f9f6] p-3"
+                                  {canAssignRooms && (
+                                    <button
+                                      type="button"
+                                      disabled={isCurrentReservationUncertain}
+                                      onClick={(e) => {
+                                        assignTriggerRef.current = e.currentTarget;
+                                        setAssigningReservationRoom(reservedRoom);
+                                        setSelectedPhysicalRoomId("");
+                                        setAssignError("");
+                                        setShowAssignModal(true);
+                                      }}
+                                      aria-label={`Assign physical room for ${roomType?.name || "reserved unit"}`}
+                                      className="rounded-full bg-[#294638] px-3.5 py-1 text-xs font-medium text-white hover:bg-[#20382c] transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
-                                      <div className="flex flex-wrap items-center justify-between gap-2">
-                                        <p className="text-sm font-medium text-[#24382e]">
-                                          Room {physicalRoom?.roomNumber ?? "unavailable"}
-                                          {physicalRoom?.name
-                                            ? ` · ${physicalRoom.name}`
-                                            : ""}
-                                        </p>
-                                        {physicalRoom?.housekeepingStatus && (
-                                          <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
-                                            physicalRoom.housekeepingStatus === "CLEAN"
-                                              ? "bg-green-100 text-green-800"
-                                              : "bg-amber-100 text-amber-800"
-                                          }`}>
-                                            {physicalRoom.housekeepingStatus}
-                                          </span>
-                                        )}
-                                      </div>
-                                      <p className="mt-1 text-xs text-[#748077]">
-                                        {formatDate(assignment.assignedFrom)} –{" "}
-                                        {formatDate(assignment.assignedUntil)}
+                                      + Assign Room ({unassignedCount} remaining)
+                                    </button>
+                                  )}
+                                </div>
+
+                                {activeAssignments.length === 0 ? (
+                                  <p className="text-xs text-[#89938b]">
+                                    No physical rooms assigned yet. {unassignedCount} unit(s) remaining to assign for stay {formatDate(selectedReservation.checkInDate)} – {formatDate(selectedReservation.checkOutDate)}.
+                                  </p>
+                                ) : (
+                                  <div className="space-y-2">
+                                    {activeAssignments.map((assignment) => {
+                                      const physicalRoom = physicalRooms.find(
+                                        (room) => room.id === assignment.roomId,
+                                      );
+
+                                      return (
+                                        <div
+                                          key={assignment.id}
+                                          className="rounded-lg bg-[#f8f9f6] p-3 border border-[#e8ebe5]"
+                                        >
+                                          <div className="flex flex-wrap items-center justify-between gap-2">
+                                            <p className="text-sm font-medium text-[#24382e]">
+                                              Room {physicalRoom?.roomNumber ?? "unavailable"}
+                                              {physicalRoom?.name
+                                                ? ` · ${physicalRoom.name}`
+                                                : ""}
+                                            </p>
+                                            {physicalRoom?.housekeepingStatus && (
+                                              <span
+                                                className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                                                  physicalRoom.housekeepingStatus === "CLEAN"
+                                                    ? "bg-green-100 text-green-800"
+                                                    : "bg-amber-100 text-amber-800"
+                                                }`}
+                                              >
+                                                {physicalRoom.housekeepingStatus}
+                                              </span>
+                                            )}
+                                          </div>
+                                          <p className="mt-1 text-xs text-[#748077]">
+                                            Full stay: {formatDate(assignment.assignedFrom)} –{" "}
+                                            {formatDate(assignment.assignedUntil)}
+                                          </p>
+                                          <p className="mt-0.5 text-xs text-[#89938b]">
+                                            Status: {assignment.status.replaceAll("_", " ")}
+                                          </p>
+                                        </div>
+                                      );
+                                    })}
+                                    {unassignedCount > 0 && (
+                                      <p className="text-xs text-amber-700 font-medium">
+                                        Notice: {unassignedCount} more physical room unit(s) must be assigned before check-in.
                                       </p>
-                                      <p className="mt-1 text-xs text-[#748077]">
-                                        Assignment: {assignment.status.replaceAll("_", " ")}
-                                      </p>
-                                    </div>
-                                  );
-                                })}
+                                    )}
+                                  </div>
+                                )}
                               </div>
-                            )}
-                          </div>
+                            );
+                          })()}
 
                           <p className="mt-3 text-xs text-[#89938b]">
                             Extra beds: booking-specific extra-bed details are not available
@@ -1876,60 +2091,70 @@ export default function ReservationsPage() {
                   Front desk operations
                 </h3>
 
-                {selectedReservation.status === "CONFIRMED" && (
-                  <div className="rounded-xl border border-[#dce2d9] bg-[#f8f9f6] p-4 space-y-3">
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wider text-[#557762]">
-                        Guest Arrival / Check-in
-                      </p>
-                      <p className="mt-1 text-xs text-[#59675e] leading-relaxed">
-                        Staff check-in policy: The PMS backend requires that all reserved rooms have complete full-stay physical room assignments and that all assigned rooms are in <strong className="font-semibold text-[#24382e]">CLEAN</strong> housekeeping status in the property timezone (Asia/Kolkata). Check-in cannot occur before the scheduled arrival date.
-                      </p>
-                    </div>
+                {selectedReservation.status === "CONFIRMED" && (() => {
+                  const totalActiveUnits = reservationRooms.reduce(
+                    (sum, r) => sum + getActiveReservedQuantity(r),
+                    0
+                  );
+                  const totalAssignedRooms = roomAssignments.filter(
+                    (a) => a.status === "ASSIGNED"
+                  ).length;
+                  const hasIncompleteAssignments = totalAssignedRooms < totalActiveUnits;
 
-                    <div className="rounded-lg bg-white p-3 border border-[#e8ebe5] text-xs space-y-1.5">
-                      <div className="flex justify-between text-[#435448]">
-                        <span>Reserved active room units:</span>
-                        <span className="font-semibold">
-                          {reservationRooms.reduce(
-                            (sum, r) => sum + (r.activeQuantity || (r.quantity - r.cancelledQuantity)),
-                            0
-                          )}
-                        </span>
-                      </div>
-                      <div className="flex justify-between text-[#435448]">
-                        <span>Assigned physical rooms:</span>
-                        <span className="font-semibold">
-                          {roomAssignments.filter((a) => a.status === "ASSIGNED").length}
-                        </span>
-                      </div>
-                      {physicalRooms.some(
-                        (p) => p.housekeepingStatus && p.housekeepingStatus !== "CLEAN"
-                      ) && (
-                        <p className="mt-1 text-amber-700 font-medium">
-                          Notice: One or more assigned physical rooms are not marked CLEAN. Backend check-in validation will enforce cleanliness.
+                  return (
+                    <div className="rounded-xl border border-[#dce2d9] bg-[#f8f9f6] p-4 space-y-3">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wider text-[#557762]">
+                          Guest Arrival / Check-in
                         </p>
-                      )}
-                    </div>
+                        <p className="mt-1 text-xs text-[#59675e] leading-relaxed">
+                          Staff check-in policy: The PMS backend requires that all reserved rooms have complete full-stay physical room assignments and that all assigned rooms are in <strong className="font-semibold text-[#24382e]">CLEAN</strong> housekeeping status in the property timezone (Asia/Kolkata). Check-in cannot occur before the scheduled arrival date.
+                        </p>
+                      </div>
 
-                    <div className="pt-1 flex items-center justify-between gap-3">
-                      <p className="text-xs text-[#89938b]">
-                        Scheduled arrival: {formatDate(selectedReservation.checkInDate)}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActionError("");
-                          setShowCheckInConfirm(true);
-                        }}
-                        aria-label="Check in guest for this reservation"
-                        className="rounded-full bg-[#294638] px-5 py-2 text-sm font-medium text-white hover:bg-[#20382c] transition shadow-sm"
-                      >
-                        Check in guest →
-                      </button>
+                      <div className="rounded-lg bg-white p-3 border border-[#e8ebe5] text-xs space-y-1.5">
+                        <div className="flex justify-between text-[#435448]">
+                          <span>Reserved active room units:</span>
+                          <span className="font-semibold">{totalActiveUnits}</span>
+                        </div>
+                        <div className="flex justify-between text-[#435448]">
+                          <span>Assigned physical rooms:</span>
+                          <span className="font-semibold">{totalAssignedRooms}</span>
+                        </div>
+                        {hasIncompleteAssignments && (
+                          <p className="mt-1 text-amber-700 font-medium">
+                            Notice: All {totalActiveUnits} active reserved unit(s) must be assigned before check-in ({totalAssignedRooms} currently assigned).
+                          </p>
+                        )}
+                        {physicalRooms.some(
+                          (p) => p.housekeepingStatus && p.housekeepingStatus !== "CLEAN"
+                        ) && (
+                          <p className="mt-1 text-amber-700 font-medium">
+                            Notice: One or more assigned physical rooms are not marked CLEAN. Backend check-in validation will enforce cleanliness.
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="pt-1 flex items-center justify-between gap-3">
+                        <p className="text-xs text-[#89938b]">
+                          Scheduled arrival: {formatDate(selectedReservation.checkInDate)}
+                        </p>
+                        <button
+                          type="button"
+                          disabled={hasIncompleteAssignments || isCurrentReservationUncertain}
+                          onClick={() => {
+                            setActionError("");
+                            setShowCheckInConfirm(true);
+                          }}
+                          aria-label="Check in guest for this reservation"
+                          className="rounded-full bg-[#294638] px-5 py-2 text-sm font-medium text-white hover:bg-[#20382c] transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Check in guest →
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
 
                 {selectedReservation.status === "CHECKED_IN" && (
                   <div className="rounded-xl border border-[#dce2d9] bg-[#f8f9f6] p-4 space-y-3">
@@ -2041,7 +2266,7 @@ export default function ReservationsPage() {
                             <span>Reserved active room units:</span>
                             <span className="font-semibold">
                               {reservationRooms.reduce(
-                                (sum, r) => sum + (r.activeQuantity || (r.quantity - r.cancelledQuantity)),
+                                (sum, r) => sum + getActiveReservedQuantity(r),
                                 0
                               )}
                             </span>
@@ -2163,7 +2388,7 @@ export default function ReservationsPage() {
                           ? reservationRooms
                               .map((r) => {
                                 const rtName = roomTypes.find((t) => t.id === r.roomTypeId)?.name || "Room";
-                                const qty = r.activeQuantity || (r.quantity - r.cancelledQuantity);
+                                const qty = getActiveReservedQuantity(r);
                                 return `${qty}x ${rtName}`;
                               })
                               .join(", ")
@@ -2418,6 +2643,238 @@ export default function ReservationsPage() {
                       className="rounded-full bg-[#8c3327] px-5 py-2 text-xs font-medium text-white hover:bg-[#73291f] transition shadow-sm disabled:opacity-50"
                     >
                       {checkingOut ? "Processing checkout…" : "Confirm Checkout"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Physical Room Assignment Dialog */}
+            {showAssignModal && assigningReservationRoom && (
+              <div
+                className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="assign-dialog-title"
+                aria-describedby="assign-dialog-description"
+                onKeyDown={handleAssignDialogKeyDown}
+              >
+                <div
+                  ref={assignDialogRef}
+                  className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto"
+                >
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-[#557762]">
+                        Front Desk Room Assignment
+                      </p>
+                      <h3
+                        id="assign-dialog-title"
+                        className="mt-1 font-serif text-xl text-[#24382e]"
+                      >
+                        Assign Physical Room
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={assigningRoom}
+                      onClick={() => setShowAssignModal(false)}
+                      className="text-xl text-[#59675e] hover:text-[#24382e] disabled:opacity-50"
+                      aria-label="Close room assignment dialog"
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  <div className="space-y-2 rounded-xl bg-[#f8f9f6] p-3 text-xs text-[#435448]">
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Guest:</span>
+                      <span className="font-medium text-[#24382e]">
+                        {guests.find((g) => g.id === selectedReservation.primaryGuestId)?.name ?? "Guest"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Stay period:</span>
+                      <span className="font-semibold text-[#24382e]">
+                        {formatDate(selectedReservation.checkInDate)} – {formatDate(selectedReservation.checkOutDate)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Target room type:</span>
+                      <span className="font-semibold text-[#24382e]">
+                        {roomTypes.find((t) => t.id === assigningReservationRoom.roomTypeId)?.name || "Room Type"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#89938b]">Unit progress:</span>
+                      <span>
+                        Assigning unit #{roomAssignments.filter((a) => a.reservationRoomId === assigningReservationRoom.id && a.status === "ASSIGNED").length + 1} of{" "}
+                        {getActiveReservedQuantity(assigningReservationRoom)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <p
+                    id="assign-dialog-description"
+                    className="text-xs text-[#59675e] leading-relaxed"
+                  >
+                    Provisional candidate selection: Candidate physical rooms below match the reserved room type and are currently active. Rooms with housekeeping status DIRTY or CLEANING IN PROGRESS may be pre-assigned for future dates, but must be CLEAN at check-in. The backend authoritatively enforces full-stay date availability and database overlap constraints upon assignment.
+                  </p>
+
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-[#294638]">
+                      Available candidate physical rooms:
+                    </p>
+
+                    {(() => {
+                      const assignedPhysicalIds = new Set(
+                        roomAssignments
+                          .filter((a) => a.status === "ASSIGNED")
+                          .map((a) => a.roomId)
+                      );
+
+                      const candidates = physicalRooms.filter((room) => {
+                        if (room.roomTypeId !== assigningReservationRoom.roomTypeId) return false;
+                        if (
+                          !selectedReservation.propertyId ||
+                          !room.propertyId ||
+                          room.propertyId !== selectedReservation.propertyId
+                        ) {
+                          return false;
+                        }
+                        if (room.active !== true) return false;
+                        if (room.status === "OUT_OF_SERVICE") return false;
+                        if (assignedPhysicalIds.has(room.id)) return false;
+                        return true;
+                      });
+
+                      if (candidates.length === 0) {
+                        return (
+                          <div className="rounded-xl border border-dashed border-[#dce2d9] p-4 text-center text-xs text-[#748077]">
+                            <p>No candidate physical rooms found for this room type.</p>
+                            <p className="mt-1 text-[11px] text-[#89938b]">
+                              All physical rooms may already be assigned within this reservation, out of service, or inactive.
+                            </p>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
+                          {candidates.map((room) => {
+                            const isSelected = selectedPhysicalRoomId === room.id;
+                            const isDirty = room.housekeepingStatus === "DIRTY";
+                            const isCleaning = room.housekeepingStatus === "CLEANING_IN_PROGRESS";
+                            const isClean = room.housekeepingStatus === "CLEAN";
+
+                            return (
+                              <label
+                                key={room.id}
+                                className={`flex items-center justify-between rounded-xl border p-3 cursor-pointer transition ${
+                                  isSelected
+                                    ? "border-[#294638] bg-[#f0f5f2] ring-1 ring-[#294638]"
+                                    : "border-[#e8ebe5] bg-white hover:border-[#cfd6cc]"
+                                }`}
+                              >
+                                <div className="flex items-center gap-3">
+                                  <input
+                                    type="radio"
+                                    name="candidatePhysicalRoom"
+                                    value={room.id}
+                                    checked={isSelected}
+                                    disabled={assigningRoom}
+                                    onChange={() => setSelectedPhysicalRoomId(room.id)}
+                                    aria-label={`Select Room ${room.roomNumber}`}
+                                    className="h-4 w-4 text-[#294638] focus:ring-[#294638]"
+                                  />
+                                  <div>
+                                    <p className="text-sm font-semibold text-[#24382e]">
+                                      Room {room.roomNumber}
+                                      {room.name ? ` · ${room.name}` : ""}
+                                    </p>
+                                    <p className="text-xs text-[#748077]">
+                                      {room.floor ? `Floor ${room.floor} · ` : ""}
+                                      Status: {room.status || "AVAILABLE"}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <div className="text-right">
+                                  <span
+                                    className={`inline-block rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                                      isClean
+                                        ? "bg-green-100 text-green-800"
+                                        : isCleaning
+                                        ? "bg-blue-100 text-blue-800"
+                                        : isDirty
+                                        ? "bg-amber-100 text-amber-800"
+                                        : "bg-gray-100 text-gray-800"
+                                    }`}
+                                  >
+                                    {room.housekeepingStatus || "UNKNOWN"}
+                                  </span>
+                                  {isDirty && (
+                                    <p className="text-[10px] text-amber-700 mt-0.5">
+                                      Dirty (Pre-assignment allowed)
+                                    </p>
+                                  )}
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {assignError && (
+                    <div
+                      role="alert"
+                      aria-live="polite"
+                      className="rounded-xl bg-red-50 p-3 text-xs text-red-700 border border-red-200 space-y-2"
+                    >
+                      <div>
+                        <p className="font-semibold">Assignment could not be completed:</p>
+                        <p className="mt-0.5">{assignError}</p>
+                      </div>
+                      {isCurrentReservationUncertain && (
+                        <div className="pt-1">
+                          <p className="text-amber-800">
+                            The connection timed out or an ambiguous network error occurred. Please refresh the reservation state to verify if the assignment was created.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={handleRefreshSelectedReservation}
+                            className="mt-2 rounded-lg bg-white px-3 py-1 text-xs font-medium text-[#24382e] border border-[#dce2d9] hover:bg-[#f5f6f3]"
+                          >
+                            Refresh reservation state
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-end gap-3 pt-2 border-t border-[#e8ebe5]">
+                    <button
+                      type="button"
+                      disabled={assigningRoom}
+                      onClick={() => setShowAssignModal(false)}
+                      className="rounded-full border border-[#dce2d9] bg-white px-4 py-2 text-xs font-medium text-[#435448] hover:bg-[#f5f6f3] disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        !selectedPhysicalRoomId ||
+                        assigningRoom ||
+                        isCurrentReservationUncertain
+                      }
+                      onClick={handleAssignRoomSubmit}
+                      aria-label="Confirm room assignment now"
+                      className="rounded-full bg-[#294638] px-5 py-2 text-xs font-medium text-white hover:bg-[#20382c] transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {assigningRoom ? "Assigning room…" : "Confirm Assignment"}
                     </button>
                   </div>
                 </div>

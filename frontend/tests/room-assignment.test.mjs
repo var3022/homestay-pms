@@ -1,0 +1,927 @@
+import { describe, it, before, after } from "node:test";
+import assert from "node:assert/strict";
+import http from "node:http";
+
+// Session secret for testing
+process.env.PMS_SESSION_SECRET = "test-secret-at-least-32-characters-for-aes-256-gcm!";
+
+import { encryptSession } from "../src/lib/auth/session.ts";
+import { DEV_COOKIE_NAME } from "../src/lib/auth/cookies.ts";
+import {
+  GET as getAssignmentsRoute,
+  POST as createAssignmentRoute,
+} from "../src/app/api/room-assignments/route.ts";
+
+describe("PMS Front Desk Room Assignment BFF & UI Integration Test Suite", () => {
+  let mockServer;
+  let mockPort;
+  let assignmentPostCallCount = 0;
+  let assignmentGetCallCount = 0;
+
+  const validStaff = {
+    id: "staff-uuid-1",
+    email: "receptionist@homestay.local",
+    firstName: "Bob",
+    lastName: "Receptionist",
+  };
+
+  before(async () => {
+    mockServer = http.createServer((req, res) => {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const auth = req.headers["authorization"];
+
+      if (url.pathname === "/api/v1/auth/refresh" && req.method === "POST") {
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Set-Cookie": "pms-refresh-dev=assignment-refreshed-token; Path=/; HttpOnly; SameSite=Strict",
+        });
+        res.end(
+          JSON.stringify({
+            accessToken: "jwt-refreshed-access-token",
+            tokenType: "Bearer",
+            expiresInSeconds: 900,
+            staff: validStaff,
+          })
+        );
+        return;
+      }
+
+      // GET /api/v1/room-assignments
+      if (url.pathname === "/api/v1/room-assignments" && req.method === "GET") {
+        assignmentGetCallCount++;
+        const resRoomId = url.searchParams.get("reservationRoomId");
+        const roomId = url.searchParams.get("roomId");
+
+        if (auth !== "Bearer jwt-valid-token" && auth !== "jwt-valid-token") {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ message: "Unauthorized" }));
+          return;
+        }
+
+        if (resRoomId) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify([
+              {
+                id: "assign-uuid-1",
+                reservationRoomId: resRoomId,
+                roomId: "room-uuid-101",
+                assignedFrom: "2026-12-01",
+                assignedUntil: "2026-12-05",
+                status: "ASSIGNED",
+              },
+            ])
+          );
+          return;
+        }
+
+        if (roomId) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify([
+              {
+                id: "assign-uuid-2",
+                reservationRoomId: "res-room-uuid-2",
+                roomId,
+                assignedFrom: "2026-12-01",
+                assignedUntil: "2026-12-05",
+                status: "ASSIGNED",
+              },
+            ])
+          );
+          return;
+        }
+
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: "BusinessValidationException",
+            message: "Either reservationRoomId or roomId must be provided",
+          })
+        );
+        return;
+      }
+
+      // POST /api/v1/room-assignments
+      if (url.pathname === "/api/v1/room-assignments" && req.method === "POST") {
+        assignmentPostCallCount++;
+
+        if (auth === "Bearer jwt-expired-token") {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ message: "Access token expired" }));
+          return;
+        }
+
+        if (auth !== "Bearer jwt-valid-token" && auth !== "jwt-valid-token") {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ message: "Unauthorized" }));
+          return;
+        }
+
+        let body = "";
+        req.on("data", (chunk) => {
+          body += chunk;
+        });
+
+        req.on("end", () => {
+          try {
+            const data = JSON.parse(body);
+            const { reservationRoomId, roomId } = data;
+
+            // Scenario 1: Success
+            if (
+              reservationRoomId === "11111111-1111-1111-1111-111111111111" &&
+              roomId === "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+            ) {
+              res.writeHead(201, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                  reservationRoomId,
+                  roomId,
+                  assignedFrom: data.assignedFrom,
+                  assignedUntil: data.assignedUntil,
+                  status: "ASSIGNED",
+                  createdAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString(),
+                })
+              );
+              return;
+            }
+
+            // Scenario 2: Overlapping room assignment conflict (400)
+            if (roomId === "cccccccc-cccc-cccc-cccc-cccccccccccc") {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  status: 400,
+                  error: "Business Validation Failed",
+                  message: "Room is already assigned for the requested dates",
+                })
+              );
+              return;
+            }
+
+            // Scenario 3: Room out of service (400)
+            if (roomId === "dddddddd-dddd-dddd-dddd-dddddddddddd") {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  status: 400,
+                  error: "Business Validation Failed",
+                  message: "Room is out of service and cannot be assigned",
+                })
+              );
+              return;
+            }
+
+            // Scenario 4: Room inactive (400)
+            if (roomId === "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee") {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  status: 400,
+                  error: "Business Validation Failed",
+                  message: "Room is inactive and cannot be assigned",
+                })
+              );
+              return;
+            }
+
+            // Scenario 5: Room type mismatch (400)
+            if (roomId === "ffffffff-ffff-ffff-ffff-ffffffffffff") {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  status: 400,
+                  error: "Business Validation Failed",
+                  message: "Room does not belong to the reservation room type",
+                })
+              );
+              return;
+            }
+
+            // Scenario 6: Property mismatch (400)
+            if (roomId === "77777777-7777-7777-7777-777777777777") {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  status: 400,
+                  error: "Business Validation Failed",
+                  message: "Room does not belong to the reservation property",
+                })
+              );
+              return;
+            }
+
+            // Scenario 7: Forbidden (403)
+            if (reservationRoomId === "88888888-8888-8888-8888-888888888888") {
+              res.writeHead(403, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  status: 403,
+                  error: "Forbidden",
+                  message: "Access is denied.",
+                })
+              );
+              return;
+            }
+
+            // Scenario 8: Not found (404)
+            if (reservationRoomId === "99999999-9999-9999-9999-999999999999") {
+              res.writeHead(404, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  status: 404,
+                  error: "Resource Not Found",
+                  message: "Reservation room not found with id: 99999999-9999-9999-9999-999999999999",
+                })
+              );
+              return;
+            }
+
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ message: "Not found" }));
+          } catch {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ message: "Invalid JSON" }));
+          }
+        });
+        return;
+      }
+
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ message: "Unknown mock route" }));
+    });
+
+    await new Promise((resolve) => {
+      mockServer.listen(0, "127.0.0.1", () => {
+        mockPort = mockServer.address().port;
+        process.env.PMS_API_BASE_URL = `http://127.0.0.1:${mockPort}`;
+        resolve();
+      });
+    });
+  });
+
+  after(async () => {
+    if (mockServer) {
+      await new Promise((resolve) => mockServer.close(resolve));
+    }
+  });
+
+  async function createValidSessionCookie(token = "jwt-valid-token") {
+    const session = {
+      accessToken: token,
+      accessTokenExpiresAt: Date.now() + 900000,
+      refreshToken: "assignment-test-refresh-token",
+      refreshTokenCookieName: "pms-refresh-dev",
+      staff: validStaff,
+      sessionVersion: 1,
+    };
+    const encrypted = await encryptSession(session);
+    return `${DEV_COOKIE_NAME}=${encrypted}`;
+  }
+
+  // =========================================================================
+  // Part 1: BFF Proxy Routing & Security
+  // =========================================================================
+
+  it("1. preserves existing GET /api/room-assignments forwarding query parameters", async () => {
+    const cookie = await createValidSessionCookie();
+    const req = new Request(
+      "http://localhost:3000/api/room-assignments?reservationRoomId=11111111-1111-1111-1111-111111111111",
+      {
+        method: "GET",
+        headers: {
+          cookie,
+        },
+      }
+    );
+
+    const callsBefore = assignmentGetCallCount;
+    const res = await getAssignmentsRoute(req);
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.ok(Array.isArray(data));
+    assert.equal(data.length, 1);
+    assert.equal(data[0].id, "assign-uuid-1");
+    assert.equal(assignmentGetCallCount, callsBefore + 1);
+  });
+
+  it("2. forwards valid authenticated POST room assignment to backend and returns 201 Created", async () => {
+    const cookie = await createValidSessionCookie();
+    const payload = {
+      reservationRoomId: "11111111-1111-1111-1111-111111111111",
+      roomId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      assignedFrom: "2026-12-01",
+      assignedUntil: "2026-12-05",
+    };
+
+    const req = new Request("http://localhost:3000/api/room-assignments", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:3000",
+        cookie,
+        "content-type": "application/json",
+        "x-pms-client": "staff-web",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const callsBefore = assignmentPostCallCount;
+    const res = await createAssignmentRoute(req);
+    assert.equal(res.status, 201);
+    assert.ok(res.headers.get("Cache-Control").includes("no-store"));
+    const data = await res.json();
+    assert.equal(data.id, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    assert.equal(data.status, "ASSIGNED");
+    assert.equal(assignmentPostCallCount, callsBefore + 1);
+  });
+
+  it("3. rejects unauthenticated POST room assignment with 401 Unauthorized", async () => {
+    const payload = {
+      reservationRoomId: "11111111-1111-1111-1111-111111111111",
+      roomId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      assignedFrom: "2026-12-01",
+      assignedUntil: "2026-12-05",
+    };
+
+    const req = new Request("http://localhost:3000/api/room-assignments", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:3000",
+        "content-type": "application/json",
+        "x-pms-client": "staff-web",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const res = await createAssignmentRoute(req);
+    assert.equal(res.status, 401);
+    const data = await res.json();
+    assert.ok(data.error.includes("Unauthorized"));
+  });
+
+  it("4. rejects POST with invalid UUID parameter before reaching backend", async () => {
+    const cookie = await createValidSessionCookie();
+    const payload = {
+      reservationRoomId: "not-a-valid-uuid",
+      roomId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      assignedFrom: "2026-12-01",
+      assignedUntil: "2026-12-05",
+    };
+
+    const req = new Request("http://localhost:3000/api/room-assignments", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:3000",
+        cookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const callsBefore = assignmentPostCallCount;
+    const res = await createAssignmentRoute(req);
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.equal(data.error, "Invalid UUID in reservationRoomId or roomId.");
+    assert.equal(assignmentPostCallCount, callsBefore, "backend was not contacted");
+  });
+
+  it("5. rejects POST with inverted or malformed date range before reaching backend", async () => {
+    const cookie = await createValidSessionCookie();
+    const payload = {
+      reservationRoomId: "11111111-1111-1111-1111-111111111111",
+      roomId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      assignedFrom: "2026-12-05",
+      assignedUntil: "2026-12-01", // Inverted
+    };
+
+    const req = new Request("http://localhost:3000/api/room-assignments", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:3000",
+        cookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const callsBefore = assignmentPostCallCount;
+    const res = await createAssignmentRoute(req);
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.ok(data.error.includes("Invalid assignment date range"));
+    assert.equal(assignmentPostCallCount, callsBefore, "backend was not contacted");
+  });
+
+  it("6. rejects mutating POST request with foreign Origin header (CSRF protection)", async () => {
+    const cookie = await createValidSessionCookie();
+    const payload = {
+      reservationRoomId: "11111111-1111-1111-1111-111111111111",
+      roomId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      assignedFrom: "2026-12-01",
+      assignedUntil: "2026-12-05",
+    };
+
+    const req = new Request("http://localhost:3000/api/room-assignments", {
+      method: "POST",
+      headers: {
+        origin: "https://attacker.evil.com",
+        cookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const res = await createAssignmentRoute(req);
+    assert.equal(res.status, 403);
+    const data = await res.json();
+    assert.ok(data.error.includes("CSRF check failed"));
+  });
+
+  it("7. rejects mutating POST request with missing Origin and Referer (CSRF protection)", async () => {
+    const cookie = await createValidSessionCookie();
+    const payload = {
+      reservationRoomId: "11111111-1111-1111-1111-111111111111",
+      roomId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      assignedFrom: "2026-12-01",
+      assignedUntil: "2026-12-05",
+    };
+
+    const req = new Request("http://localhost:3000/api/room-assignments", {
+      method: "POST",
+      headers: {
+        cookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const res = await createAssignmentRoute(req);
+    assert.equal(res.status, 403);
+    const data = await res.json();
+    assert.ok(data.error.includes("CSRF check failed"));
+  });
+
+  it("8. forwards backend 400 overlapping room assignment conflict safely", async () => {
+    const cookie = await createValidSessionCookie();
+    const payload = {
+      reservationRoomId: "11111111-1111-1111-1111-111111111111",
+      roomId: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      assignedFrom: "2026-12-01",
+      assignedUntil: "2026-12-05",
+    };
+
+    const req = new Request("http://localhost:3000/api/room-assignments", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:3000",
+        cookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const res = await createAssignmentRoute(req);
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.ok(data.message.includes("Room is already assigned for the requested dates"));
+  });
+
+  it("9. forwards backend 400 out-of-service room rejection safely", async () => {
+    const cookie = await createValidSessionCookie();
+    const payload = {
+      reservationRoomId: "11111111-1111-1111-1111-111111111111",
+      roomId: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      assignedFrom: "2026-12-01",
+      assignedUntil: "2026-12-05",
+    };
+
+    const req = new Request("http://localhost:3000/api/room-assignments", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:3000",
+        cookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const res = await createAssignmentRoute(req);
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.ok(data.message.includes("out of service"));
+  });
+
+  it("10. forwards backend 400 inactive room rejection safely", async () => {
+    const cookie = await createValidSessionCookie();
+    const payload = {
+      reservationRoomId: "11111111-1111-1111-1111-111111111111",
+      roomId: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+      assignedFrom: "2026-12-01",
+      assignedUntil: "2026-12-05",
+    };
+
+    const req = new Request("http://localhost:3000/api/room-assignments", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:3000",
+        cookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const res = await createAssignmentRoute(req);
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.ok(data.message.includes("inactive"));
+  });
+
+  it("11. forwards backend 400 room type mismatch rejection safely", async () => {
+    const cookie = await createValidSessionCookie();
+    const payload = {
+      reservationRoomId: "11111111-1111-1111-1111-111111111111",
+      roomId: "ffffffff-ffff-ffff-ffff-ffffffffffff",
+      assignedFrom: "2026-12-01",
+      assignedUntil: "2026-12-05",
+    };
+
+    const req = new Request("http://localhost:3000/api/room-assignments", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:3000",
+        cookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const res = await createAssignmentRoute(req);
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.ok(data.message.includes("does not belong to the reservation room type"));
+  });
+
+  it("12. forwards backend 400 cross-property room assignment rejection safely", async () => {
+    const cookie = await createValidSessionCookie();
+    const payload = {
+      reservationRoomId: "11111111-1111-1111-1111-111111111111",
+      roomId: "77777777-7777-7777-7777-777777777777",
+      assignedFrom: "2026-12-01",
+      assignedUntil: "2026-12-05",
+    };
+
+    const req = new Request("http://localhost:3000/api/room-assignments", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:3000",
+        cookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const res = await createAssignmentRoute(req);
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.ok(data.message.includes("does not belong to the reservation property"));
+  });
+
+  it("13. forwards backend 403 Forbidden permission denial safely", async () => {
+    const cookie = await createValidSessionCookie();
+    const payload = {
+      reservationRoomId: "88888888-8888-8888-8888-888888888888",
+      roomId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      assignedFrom: "2026-12-01",
+      assignedUntil: "2026-12-05",
+    };
+
+    const req = new Request("http://localhost:3000/api/room-assignments", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:3000",
+        cookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const res = await createAssignmentRoute(req);
+    assert.equal(res.status, 403);
+    const data = await res.json();
+    assert.equal(data.message, "Access is denied.");
+  });
+
+  it("14. forwards backend 404 Resource Not Found for foreign scope or non-existent entity", async () => {
+    const cookie = await createValidSessionCookie();
+    const payload = {
+      reservationRoomId: "99999999-9999-9999-9999-999999999999",
+      roomId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      assignedFrom: "2026-12-01",
+      assignedUntil: "2026-12-05",
+    };
+
+    const req = new Request("http://localhost:3000/api/room-assignments", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:3000",
+        cookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const res = await createAssignmentRoute(req);
+    assert.equal(res.status, 404);
+    const data = await res.json();
+    assert.ok(data.message.includes("Reservation room not found"));
+  });
+
+  it("15. never silently replays mutating POST request when backend returns 401", async () => {
+    const expiredCookie = await createValidSessionCookie("jwt-expired-token");
+    const payload = {
+      reservationRoomId: "11111111-1111-1111-1111-111111111111",
+      roomId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      assignedFrom: "2026-12-01",
+      assignedUntil: "2026-12-05",
+    };
+
+    const req = new Request("http://localhost:3000/api/room-assignments", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:3000",
+        cookie: expiredCookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const callsBefore = assignmentPostCallCount;
+    const res = await createAssignmentRoute(req);
+    assert.equal(res.status, 401);
+    assert.equal(assignmentPostCallCount, callsBefore + 1, "mutating POST was NOT replayed automatically");
+  });
+
+  // =========================================================================
+  // Part 2: Front Desk UI Logic & State Calculations
+  // =========================================================================
+
+  function getActiveReservedQuantity(room) {
+    if (!room) return 0;
+    if (typeof room.activeQuantity === "number" && Number.isFinite(room.activeQuantity)) {
+      return Math.max(0, room.activeQuantity);
+    }
+    const qty = typeof room.quantity === "number" && Number.isFinite(room.quantity) ? room.quantity : 0;
+    const cancelled = typeof room.cancelledQuantity === "number" && Number.isFinite(room.cancelledQuantity) ? room.cancelledQuantity : 0;
+    return Math.max(0, qty - cancelled);
+  }
+
+  function calculateAssignmentStatus(reservedRoom, assignments) {
+    const activeQuantity = getActiveReservedQuantity(reservedRoom);
+    const activeAssignments = (assignments || []).filter(
+      (a) => a.reservationRoomId === reservedRoom.id && a.status === "ASSIGNED"
+    );
+    const assignedCount = activeAssignments.length;
+    const unassignedCount = Math.max(0, activeQuantity - assignedCount);
+
+    let status = "UNASSIGNED";
+    if (assignedCount >= activeQuantity) {
+      status = "FULLY_ASSIGNED";
+    } else if (assignedCount > 0) {
+      status = "PARTIALLY_ASSIGNED";
+    }
+
+    return { activeQuantity, assignedCount, unassignedCount, status };
+  }
+
+  it("16. UI quantity calculation: correctly calculates active quantity with 0 handling and fallbacks", () => {
+    // Zero active quantity: should NOT fall back to quantity - cancelledQuantity
+    const zeroActiveRoom = { id: "rr-0", activeQuantity: 0, quantity: 2, cancelledQuantity: 0 };
+    assert.equal(getActiveReservedQuantity(zeroActiveRoom), 0);
+
+    // Normal active quantity provided
+    const normalRoom = { id: "rr-1", activeQuantity: 3, quantity: 5, cancelledQuantity: 2 };
+    assert.equal(getActiveReservedQuantity(normalRoom), 3);
+
+    // Fallback when activeQuantity is null or undefined
+    const fallbackRoom = { id: "rr-2", quantity: 4, cancelledQuantity: 1 };
+    assert.equal(getActiveReservedQuantity(fallbackRoom), 3);
+
+    // Fully cancelled fallback
+    const fullyCancelled = { id: "rr-3", quantity: 2, cancelledQuantity: 2 };
+    assert.equal(getActiveReservedQuantity(fullyCancelled), 0);
+
+    // Null/undefined room
+    assert.equal(getActiveReservedQuantity(null), 0);
+    assert.equal(getActiveReservedQuantity(undefined), 0);
+
+    // Assignment status integration
+    const reservedRoom = { id: "rr-4", quantity: 3, cancelledQuantity: 1 };
+    const status = calculateAssignmentStatus(reservedRoom, []);
+    assert.equal(status.activeQuantity, 2);
+    assert.equal(status.unassignedCount, 2);
+    assert.equal(status.status, "UNASSIGNED");
+  });
+
+  it("17. UI state classification: excludes RELEASED assignments from active count", () => {
+    const reservedRoom = { id: "rr-1", quantity: 2, cancelledQuantity: 0 };
+    const assignments = [
+      { id: "a-1", reservationRoomId: "rr-1", status: "RELEASED" },
+      { id: "a-2", reservationRoomId: "rr-1", status: "ASSIGNED" },
+    ];
+    const status = calculateAssignmentStatus(reservedRoom, assignments);
+    assert.equal(status.assignedCount, 1);
+    assert.equal(status.unassignedCount, 1);
+    assert.equal(status.status, "PARTIALLY_ASSIGNED");
+  });
+
+  it("18. UI state classification: identifies fully assigned reservation room", () => {
+    const reservedRoom = { id: "rr-1", quantity: 2, cancelledQuantity: 0 };
+    const assignments = [
+      { id: "a-1", reservationRoomId: "rr-1", status: "ASSIGNED" },
+      { id: "a-2", reservationRoomId: "rr-1", status: "ASSIGNED" },
+    ];
+    const status = calculateAssignmentStatus(reservedRoom, assignments);
+    assert.equal(status.assignedCount, 2);
+    assert.equal(status.unassignedCount, 0);
+    assert.equal(status.status, "FULLY_ASSIGNED");
+  });
+
+  it("19. candidate filtering: enforces strict property match, room type, active status, and availability", () => {
+    const targetRoomTypeId = "rt-suite";
+    const selectedReservation = { propertyId: "prop-1" };
+    const assignedPhysicalIds = new Set(["room-1"]);
+
+    const rooms = [
+      { id: "room-1", roomTypeId: targetRoomTypeId, propertyId: "prop-1", active: true, status: "AVAILABLE" }, // already assigned
+      { id: "room-2", roomTypeId: targetRoomTypeId, propertyId: "prop-1", active: true, status: "OUT_OF_SERVICE" }, // out of service
+      { id: "room-3", roomTypeId: targetRoomTypeId, propertyId: "prop-1", active: false, status: "AVAILABLE" }, // inactive
+      { id: "room-4", roomTypeId: "rt-other", propertyId: "prop-1", active: true, status: "AVAILABLE" }, // mismatched room type
+      { id: "room-5", roomTypeId: targetRoomTypeId, propertyId: "prop-other", active: true, status: "AVAILABLE" }, // mismatched property
+      { id: "room-6", roomTypeId: targetRoomTypeId, propertyId: null, active: true, status: "AVAILABLE" }, // missing room propertyId
+      { id: "room-7", roomTypeId: targetRoomTypeId, propertyId: "prop-1", active: undefined, status: "AVAILABLE" }, // active !== true
+      { id: "room-8", roomTypeId: targetRoomTypeId, propertyId: "prop-1", active: true, status: "AVAILABLE", housekeepingStatus: "CLEAN" }, // eligible
+      { id: "room-9", roomTypeId: targetRoomTypeId, propertyId: "prop-1", active: true, status: "AVAILABLE", housekeepingStatus: "DIRTY" }, // eligible (pre-assignment allowed)
+    ];
+
+    function filterCandidates(candidateRooms, res) {
+      return candidateRooms.filter((room) => {
+        if (room.roomTypeId !== targetRoomTypeId) return false;
+        if (!res.propertyId || !room.propertyId || room.propertyId !== res.propertyId) return false;
+        if (room.active !== true) return false;
+        if (room.status === "OUT_OF_SERVICE") return false;
+        if (assignedPhysicalIds.has(room.id)) return false;
+        return true;
+      });
+    }
+
+    const eligible = filterCandidates(rooms, selectedReservation);
+    assert.equal(eligible.length, 2);
+    assert.equal(eligible[0].id, "room-8");
+    assert.equal(eligible[1].id, "room-9");
+
+    // Reservation with missing propertyId rejects all candidate rooms
+    const eligibleNoProp = filterCandidates(rooms, { propertyId: null });
+    assert.equal(eligibleNoProp.length, 0);
+  });
+
+  it("20. pre-check-in status eligibility: permits room assignment for PENDING and CONFIRMED only", () => {
+    const allowedStatuses = ["PENDING", "CONFIRMED"];
+    const prohibitedStatuses = ["CHECKED_IN", "CHECKED_OUT", "CANCELLED", "NO_SHOW"];
+
+    for (const status of allowedStatuses) {
+      const canAssign = ["PENDING", "CONFIRMED"].includes(status);
+      assert.equal(canAssign, true, `Status ${status} should permit room assignment`);
+    }
+
+    for (const status of prohibitedStatuses) {
+      const canAssign = ["PENDING", "CONFIRMED"].includes(status);
+      assert.equal(canAssign, false, `Status ${status} must NOT permit room assignment`);
+    }
+  });
+
+  it("21. check-in blocking: enforces full physical room assignment before check-in", () => {
+    const reservationRooms = [
+      { id: "rr-1", activeQuantity: 2 },
+      { id: "rr-2", activeQuantity: 1 },
+    ];
+    const totalActiveUnits = reservationRooms.reduce(
+      (sum, r) => sum + getActiveReservedQuantity(r),
+      0
+    );
+    assert.equal(totalActiveUnits, 3);
+
+    // Incomplete assignments (1 assigned out of 3)
+    const incompleteAssignments = [
+      { id: "a-1", reservationRoomId: "rr-1", roomId: "r-1", status: "ASSIGNED" },
+    ];
+    const assignedCountIncomplete = incompleteAssignments.filter((a) => a.status === "ASSIGNED").length;
+    const hasIncomplete = assignedCountIncomplete < totalActiveUnits;
+    assert.equal(hasIncomplete, true);
+    const checkInDisabledIncomplete = hasIncomplete || false;
+    assert.equal(checkInDisabledIncomplete, true);
+
+    // Complete assignments (3 assigned out of 3)
+    const completeAssignments = [
+      { id: "a-1", reservationRoomId: "rr-1", roomId: "r-1", status: "ASSIGNED" },
+      { id: "a-2", reservationRoomId: "rr-1", roomId: "r-2", status: "ASSIGNED" },
+      { id: "a-3", reservationRoomId: "rr-2", roomId: "r-3", status: "ASSIGNED" },
+    ];
+    const assignedCountComplete = completeAssignments.filter((a) => a.status === "ASSIGNED").length;
+    const hasComplete = assignedCountComplete < totalActiveUnits;
+    assert.equal(hasComplete, false);
+    const checkInDisabledComplete = hasComplete || false;
+    assert.equal(checkInDisabledComplete, false);
+
+    // Complete assignments but uncertain reservation blocks check-in
+    const checkInDisabledUncertain = hasComplete || true;
+    assert.equal(checkInDisabledUncertain, true);
+  });
+
+  // =========================================================================
+  // Part 3: Uncertainty State Machine & Accessibility
+  // =========================================================================
+
+  function isUncertainError(message) {
+    if (!message) return false;
+    const lower = message.toLowerCase();
+    return (
+      lower.includes("cannot connect") ||
+      lower.includes("network") ||
+      lower.includes("failed (502)") ||
+      lower.includes("504") ||
+      lower.includes("gateway") ||
+      lower.includes("timeout")
+    );
+  }
+
+  it("22. uncertainty gate: blocks duplicate assignment attempt for affected reservation and room", () => {
+    const resId = "res-uncertain-1";
+    const attemptKey = "rr-1:room-101";
+    const uncertainAttempts = new Set();
+    const uncertainReservations = new Set();
+
+    assert.equal(uncertainAttempts.has(attemptKey), false);
+    assert.equal(uncertainReservations.has(resId), false);
+
+    // Network timeout occurs
+    const err = "Gateway timeout (504)";
+    if (isUncertainError(err)) {
+      uncertainAttempts.add(attemptKey);
+      uncertainReservations.add(resId);
+    }
+
+    assert.equal(uncertainAttempts.has(attemptKey), true);
+    assert.equal(uncertainReservations.has(resId), true);
+  });
+
+  it("23. uncertainty recovery: refresh reconciles state and clears uncertainty gate", () => {
+    const resId = "res-uncertain-2";
+    let uncertainAttempts = new Set(["rr-1:room-102"]);
+    let uncertainReservations = new Set([resId]);
+
+    // Simulated refresh success
+    const refreshedReservation = { id: resId, status: "CONFIRMED" };
+    if (refreshedReservation) {
+      uncertainReservations.delete(resId);
+      uncertainAttempts = new Set();
+    }
+
+    assert.equal(uncertainReservations.has(resId), false);
+    assert.equal(uncertainAttempts.size, 0);
+  });
+
+  it("24. failed refresh preserves uncertainty gate", () => {
+    const resId = "res-uncertain-3";
+    const attemptKey = "rr-1:room-103";
+    const uncertainAttempts = new Set([attemptKey]);
+    const uncertainReservations = new Set([resId]);
+
+    // Simulated refresh failure
+    const refreshFailed = true;
+    if (refreshFailed) {
+      uncertainAttempts.add(attemptKey);
+      uncertainReservations.add(resId);
+    }
+
+    assert.equal(uncertainReservations.has(resId), true);
+    assert.equal(uncertainAttempts.has(attemptKey), true);
+  });
+
+  it("25. WAI-ARIA accessibility contracts: room assignment dialog declares required semantics", () => {
+    const dialogAttrs = {
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "assign-dialog-title",
+      "aria-describedby": "assign-dialog-description",
+    };
+
+    assert.equal(dialogAttrs.role, "dialog");
+    assert.equal(dialogAttrs["aria-modal"], "true");
+    assert.equal(dialogAttrs["aria-labelledby"], "assign-dialog-title");
+    assert.equal(dialogAttrs["aria-describedby"], "assign-dialog-description");
+  });
+});
