@@ -127,10 +127,17 @@ export async function proxyToBackend(
         const rawText = await request.text();
         if (rawText && rawText.trim().length > 0) {
           const json = JSON.parse(rawText);
-          // Never override existing propertyId
-          if (options?.injectPropertyId && process.env.PMS_PROPERTY_ID) {
+          // Never override existing propertyId; fail closed if property context is missing
+          if (options?.injectPropertyId && json && typeof json === "object" && !Array.isArray(json)) {
             if (!json.propertyId) {
-              json.propertyId = process.env.PMS_PROPERTY_ID;
+              const propId = process.env.PMS_PROPERTY_ID?.trim();
+              if (!propId) {
+                return NextResponse.json(
+                  { error: "PMS_PROPERTY_ID is not configured." },
+                  { status: 500, headers: { "Cache-Control": "no-store, private" } }
+                );
+              }
+              json.propertyId = propId;
             }
           }
           requestBody = JSON.stringify(json);

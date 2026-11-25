@@ -140,11 +140,14 @@ function isUncertainError(message: string): boolean {
   const lower = message.toLowerCase();
   return (
     lower.includes("cannot connect") ||
+    lower.includes("failed to fetch") ||
     lower.includes("network") ||
     lower.includes("failed (502)") ||
     lower.includes("504") ||
     lower.includes("gateway") ||
-    lower.includes("timeout")
+    lower.includes("timeout") ||
+    lower.includes("timed out") ||
+    lower.includes("aborted")
   );
 }
 
@@ -415,6 +418,11 @@ export default function ReservationsPage() {
     [assigningRoom]
   );
   const [guestMode, setGuestMode] = useState<"existing" | "new">("existing");
+  const creatingReservationRef = useRef(false);
+  const [guestCreateUncertain, setGuestCreateUncertain] = useState(false);
+  const [reservationCreateUncertain, setReservationCreateUncertain] =
+    useState(false);
+  const [reconcilingCreate, setReconcilingCreate] = useState(false);
   const [primaryGuestId, setPrimaryGuestId] = useState("");
   const [newGuestName, setNewGuestName] = useState("");
   const [newGuestPhone, setNewGuestPhone] = useState("");
@@ -439,20 +447,22 @@ export default function ReservationsPage() {
     { roomTypeId: "", quantity: 1, unitPrice: "" },
   ]);
 
-  const loadReservations = useCallback(async () => {
+  const loadReservations = useCallback(async (): Promise<boolean> => {
     const seq = ++listRequestSeqRef.current;
     try {
       const response = await fetch("/api/reservations", {
         cache: "no-store",
       });
       const data = await readResponse(response);
-      if (seq < listRequestSeqRef.current) return;
+      if (seq < listRequestSeqRef.current) return false;
       setReservations(unwrapList<Reservation>(data));
+      return true;
     } catch (err) {
-      if (seq < listRequestSeqRef.current) return;
+      if (seq < listRequestSeqRef.current) return false;
       setError(
         err instanceof Error ? err.message : "Could not load reservations.",
       );
+      return false;
     } finally {
       if (seq >= listRequestSeqRef.current) {
         setLoading(false);
@@ -460,7 +470,7 @@ export default function ReservationsPage() {
     }
   }, []);
 
-  const loadFormOptions = useCallback(async () => {
+  const loadFormOptions = useCallback(async (): Promise<boolean> => {
 
     try {
       const [guestResponse, sourceResponse, roomTypeResponse] =
@@ -501,12 +511,14 @@ export default function ReservationsPage() {
           ""
         );
       });
+      return true;
     } catch (err) {
       setResourceError(
         err instanceof Error
           ? err.message
           : "Could not load guests, booking sources, and room types.",
       );
+      return false;
     }
   }, []);
 
@@ -620,6 +632,19 @@ export default function ReservationsPage() {
     event: React.FormEvent<HTMLFormElement>,
   ) {
     event.preventDefault();
+    if (saving || creatingReservationRef.current) return;
+    if (guestMode === "new" && guestCreateUncertain) {
+      setFormError(
+        "Guest creation outcome is uncertain. Refresh the guest list to check whether the guest was already created before retrying.",
+      );
+      return;
+    }
+    if (reservationCreateUncertain) {
+      setFormError(
+        "Reservation creation outcome is uncertain. Refresh reservations to verify whether the booking was already created before retrying.",
+      );
+      return;
+    }
     setFormError("");
     setSuccessMessage("");
 
@@ -673,7 +698,9 @@ export default function ReservationsPage() {
       return;
     }
 
+    creatingReservationRef.current = true;
     setSaving(true);
+    let createdNewGuest: Guest | null = null;
 
     try {
       let guestId = primaryGuestId;
@@ -702,6 +729,7 @@ export default function ReservationsPage() {
           );
         }
 
+        createdNewGuest = createdGuest;
         guestId = createdGuest.id;
         setGuests((current) => [
           ...current.filter((guest) => guest.id !== createdGuest.id),
@@ -739,17 +767,39 @@ export default function ReservationsPage() {
       setSuccessMessage(
         "Reservation created successfully. Its initial status is PENDING.",
       );
+      setGuestCreateUncertain(false);
+      setReservationCreateUncertain(false);
       resetReservationForm();
       setShowCreateForm(false);
 
       await Promise.all([loadReservations(), loadFormOptions()]);
     } catch (err) {
-      setFormError(
+      const message =
         err instanceof Error
           ? err.message
-          : "Could not create the reservation.",
-      );
+          : "Could not create the reservation.";
+      if (createdNewGuest) {
+        if (isUncertainError(message)) {
+          setReservationCreateUncertain(true);
+        }
+        setFormError(
+          `Guest "${createdNewGuest.name}" was created and selected, but the reservation could not be confirmed: ${message}`,
+        );
+      } else if (guestMode === "new" && isUncertainError(message)) {
+        setGuestCreateUncertain(true);
+        setFormError(
+          `${message} Refresh the guest list before retrying to avoid creating a duplicate guest.`,
+        );
+      } else if (isUncertainError(message)) {
+        setReservationCreateUncertain(true);
+        setFormError(
+          `${message} Refresh reservations before retrying to avoid creating a duplicate booking.`,
+        );
+      } else {
+        setFormError(message);
+      }
     } finally {
+      creatingReservationRef.current = false;
       setSaving(false);
     }
   }
@@ -1485,6 +1535,43 @@ export default function ReservationsPage() {
                 </label>
               </section>
 
+              {((guestMode === "new" && guestCreateUncertain) ||
+                reservationCreateUncertain) && (
+                <div
+                  role="alert"
+                  className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 space-y-2"
+                >
+                  <p className="font-medium">
+                    Submission paused due to an uncertain network outcome. Refresh
+                    to reconcile server state before retrying, or switch to
+                    Existing guest if the guest already appears.
+                  </p>
+                  <button
+                    type="button"
+                    disabled={reconcilingCreate}
+                    onClick={async () => {
+                      setReconcilingCreate(true);
+                      try {
+                        const [resOk, optsOk] = await Promise.all([
+                          loadReservations(),
+                          loadFormOptions(),
+                        ]);
+                        if (optsOk) setGuestCreateUncertain(false);
+                        if (resOk) setReservationCreateUncertain(false);
+                        if (optsOk && resOk) setFormError("");
+                      } finally {
+                        setReconcilingCreate(false);
+                      }
+                    }}
+                    className="rounded-full border border-amber-400 bg-white px-4 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                  >
+                    {reconcilingCreate
+                      ? "Refreshing…"
+                      : "↻ Refresh guest list & reservations"}
+                  </button>
+                </div>
+              )}
+
               {formError && (
                 <div
                   role="alert"
@@ -1509,7 +1596,12 @@ export default function ReservationsPage() {
 
                 <button
                   type="submit"
-                  disabled={saving || roomTypes.length === 0}
+                  disabled={
+                    saving ||
+                    roomTypes.length === 0 ||
+                    (guestMode === "new" && guestCreateUncertain) ||
+                    reservationCreateUncertain
+                  }
                   className="rounded-full bg-[#294638] px-6 py-2.5 text-sm font-medium text-white hover:bg-[#20382c] disabled:opacity-50"
                 >
                   {saving ? "Saving reservation…" : "Create reservation"}
