@@ -5,6 +5,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { StaffHeader } from "../StaffHeader";
 import {
+  ApiRequestError,
+  isUncertainError,
+  matchesExactAssignment,
+  type UncertainAssignmentAttempt,
+} from "@/lib/mutation-error";
+import {
   evaluateReservationAssignmentCompleteness,
   getActiveReservedQuantity,
 } from "@/lib/reservations/completeness";
@@ -135,22 +141,6 @@ function formatDateTimeIST(value?: string | null) {
 }
 
 
-function isUncertainError(message: string): boolean {
-  if (!message) return false;
-  const lower = message.toLowerCase();
-  return (
-    lower.includes("cannot connect") ||
-    lower.includes("failed to fetch") ||
-    lower.includes("network") ||
-    lower.includes("failed (502)") ||
-    lower.includes("504") ||
-    lower.includes("gateway") ||
-    lower.includes("timeout") ||
-    lower.includes("timed out") ||
-    lower.includes("aborted")
-  );
-}
-
 function todayInIndia() {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Kolkata",
@@ -223,6 +213,7 @@ async function readResponse(response: Response): Promise<unknown> {
 
   if (!response.ok) {
     let message = `Request failed (${response.status}).`;
+    let code: string | undefined;
 
     if (typeof data === "string" && data.trim()) {
       message = data;
@@ -239,9 +230,15 @@ async function readResponse(response: Response): Promise<unknown> {
       if (typeof candidate === "string" && candidate.trim()) {
         message = candidate;
       }
+
+      if (typeof obj.code === "string" && obj.code.trim()) {
+        code = obj.code;
+      } else if (typeof nested?.code === "string" && nested.code.trim()) {
+        code = nested.code;
+      }
     }
 
-    throw new Error(message);
+    throw new ApiRequestError(message, response.status, code);
   }
 
   return data;
@@ -286,6 +283,10 @@ export default function ReservationsPage() {
   const [assigningRoom, setAssigningRoom] = useState(false);
   const [assignError, setAssignError] = useState("");
   const [uncertainAssignmentAttempts, setUncertainAssignmentAttempts] = useState<Set<string>>(new Set());
+  const [uncertainAssignmentDetails, setUncertainAssignmentDetails] = useState<
+    Record<string, UncertainAssignmentAttempt>
+  >({});
+  const [refreshingReservation, setRefreshingReservation] = useState(false);
 
   const [actionError, setActionError] = useState("");
   const [actionSuccess, setActionSuccess] = useState("");
@@ -565,13 +566,15 @@ export default function ReservationsPage() {
         ),
       );
 
-      if (seq < roomDetailsSeqRef.current) return;
+      if (seq < roomDetailsSeqRef.current) return null;
 
+      const flatAssignments = assignmentLists.flat();
       setReservationRooms(roomList);
       setPhysicalRooms(physicalRoomList);
-      setRoomAssignments(assignmentLists.flat());
+      setRoomAssignments(flatAssignments);
+      return { roomList, assignments: flatAssignments };
     } catch (err) {
-      if (seq < roomDetailsSeqRef.current) return;
+      if (seq < roomDetailsSeqRef.current) return null;
       const message =
         err instanceof Error ? err.message : "Unable to load room details.";
       setRoomDetailsError(message);
@@ -779,18 +782,18 @@ export default function ReservationsPage() {
           ? err.message
           : "Could not create the reservation.";
       if (createdNewGuest) {
-        if (isUncertainError(message)) {
+        if (isUncertainError(err)) {
           setReservationCreateUncertain(true);
         }
         setFormError(
           `Guest "${createdNewGuest.name}" was created and selected, but the reservation could not be confirmed: ${message}`,
         );
-      } else if (guestMode === "new" && isUncertainError(message)) {
+      } else if (guestMode === "new" && isUncertainError(err)) {
         setGuestCreateUncertain(true);
         setFormError(
           `${message} Refresh the guest list before retrying to avoid creating a duplicate guest.`,
         );
-      } else if (isUncertainError(message)) {
+      } else if (isUncertainError(err)) {
         setReservationCreateUncertain(true);
         setFormError(
           `${message} Refresh reservations before retrying to avoid creating a duplicate booking.`,
@@ -862,7 +865,7 @@ export default function ReservationsPage() {
       const message =
         err instanceof Error ? err.message : "Failed to confirm reservation.";
       setActionError(message);
-      if (isUncertainError(message)) {
+      if (isUncertainError(err)) {
         setUncertainOutcome(true);
         setUncertainReservationIds((prev) => new Set(prev).add(resId));
       }
@@ -907,7 +910,7 @@ export default function ReservationsPage() {
       const message =
         err instanceof Error ? err.message : "Failed to check in reservation.";
       setActionError(message);
-      if (isUncertainError(message)) {
+      if (isUncertainError(err)) {
         setUncertainOutcome(true);
         setUncertainReservationIds((prev) => new Set(prev).add(resId));
       }
@@ -954,7 +957,7 @@ export default function ReservationsPage() {
       const message =
         err instanceof Error ? err.message : "Failed to check out reservation.";
       setActionError(message);
-      if (isUncertainError(message)) {
+      if (isUncertainError(err)) {
         setUncertainOutcome(true);
         setUncertainReservationIds((prev) => new Set(prev).add(resId));
       }
@@ -981,6 +984,8 @@ export default function ReservationsPage() {
     }
 
     const resId = selectedReservation.id;
+    const assignedFrom = selectedReservation.checkInDate;
+    const assignedUntil = selectedReservation.checkOutDate;
     const attemptKey = `${assigningReservationRoom.id}:${selectedPhysicalRoomId}`;
 
     if (
@@ -1005,8 +1010,8 @@ export default function ReservationsPage() {
         body: JSON.stringify({
           reservationRoomId: assigningReservationRoom.id,
           roomId: selectedPhysicalRoomId,
-          assignedFrom: selectedReservation.checkInDate,
-          assignedUntil: selectedReservation.checkOutDate,
+          assignedFrom,
+          assignedUntil,
         }),
       });
 
@@ -1029,10 +1034,20 @@ export default function ReservationsPage() {
         err instanceof Error ? err.message : "Failed to assign room.";
       setAssignError(message);
 
-      if (isUncertainError(message)) {
+      if (isUncertainError(err)) {
         setUncertainOutcome(true);
         setUncertainReservationIds((prev) => new Set(prev).add(resId));
         setUncertainAssignmentAttempts((prev) => new Set(prev).add(attemptKey));
+        setUncertainAssignmentDetails((prev) => ({
+          ...prev,
+          [resId]: {
+            reservationId: resId,
+            reservationRoomId: assigningReservationRoom.id,
+            roomId: selectedPhysicalRoomId,
+            assignedFrom,
+            assignedUntil,
+          },
+        }));
       }
     } finally {
       setAssigningRoom(false);
@@ -1040,9 +1055,10 @@ export default function ReservationsPage() {
   }
 
   async function handleRefreshSelectedReservation() {
-    if (!selectedReservation) return;
+    if (!selectedReservation || refreshingReservation) return;
     const resId = selectedReservation.id;
     const seq = ++listRequestSeqRef.current;
+    setRefreshingReservation(true);
     try {
       const response = await fetch("/api/reservations", { cache: "no-store" });
       const data = await readResponse(response);
@@ -1050,26 +1066,76 @@ export default function ReservationsPage() {
       const list = unwrapList<Reservation>(data);
       setReservations(list);
       const found = list.find((r) => r.id === resId);
-      if (found) {
-        setSelectedReservation(found);
-        await loadRoomDetails(resId);
-        setUncertainReservationIds((prev) => {
-          const next = new Set(prev);
-          next.delete(resId);
-          return next;
-        });
-        setUncertainAssignmentAttempts(new Set());
-        if (showConfirmModal && found.status !== "PENDING") {
-          setShowConfirmModal(false);
-        }
-        if (showCheckInConfirm && found.status !== "CONFIRMED") {
-          setShowCheckInConfirm(false);
-        }
-        if (showCheckOutConfirm && found.status !== "CHECKED_IN") {
-          setShowCheckOutConfirm(false);
-        }
-        if (!["PENDING", "CONFIRMED"].includes(found.status)) {
+      if (!found) {
+        setActionError("Reservation could not be located during refresh.");
+        setUncertainOutcome(true);
+        setUncertainReservationIds((prev) => new Set(prev).add(resId));
+        return;
+      }
+
+      const refreshedDetails = await loadRoomDetails(resId);
+      if (!refreshedDetails) {
+        return;
+      }
+      setSelectedReservation(found);
+
+      const pendingAttempt = uncertainAssignmentDetails[resId];
+      const exactAttemptCommitted = Boolean(
+        pendingAttempt &&
+          refreshedDetails.assignments.some((a) =>
+            matchesExactAssignment(pendingAttempt, a)
+          )
+      );
+
+      setUncertainReservationIds((prev) => {
+        const next = new Set(prev);
+        next.delete(resId);
+        return next;
+      });
+      setUncertainAssignmentAttempts((prev) => {
+        if (!pendingAttempt) return prev;
+        const next = new Set(prev);
+        next.delete(`${pendingAttempt.reservationRoomId}:${pendingAttempt.roomId}`);
+        return next;
+      });
+      setUncertainAssignmentDetails((prev) => {
+        if (!(resId in prev)) return prev;
+        const next = { ...prev };
+        delete next[resId];
+        return next;
+      });
+
+      if (showConfirmModal && found.status !== "PENDING") {
+        setShowConfirmModal(false);
+      }
+      if (showCheckInConfirm && found.status !== "CONFIRMED") {
+        setShowCheckInConfirm(false);
+      }
+      if (showCheckOutConfirm && found.status !== "CHECKED_IN") {
+        setShowCheckOutConfirm(false);
+      }
+      if (!["PENDING", "CONFIRMED"].includes(found.status)) {
+        setShowAssignModal(false);
+      } else if (exactAttemptCommitted) {
+        setShowAssignModal(false);
+        setActionSuccess(
+          "Authoritative state refreshed: physical room assignment is already recorded."
+        );
+      } else if (showAssignModal && assigningReservationRoom) {
+        const refreshedUnit = refreshedDetails.roomList.find(
+          (rr) => rr.id === assigningReservationRoom.id
+        );
+        const activeQty = refreshedUnit ? getActiveReservedQuantity(refreshedUnit) : 0;
+        const unitAssignedCount = refreshedDetails.assignments.filter(
+          (a) =>
+            a.reservationRoomId === assigningReservationRoom.id &&
+            a.status === "ASSIGNED"
+        ).length;
+        if (activeQty > 0 && unitAssignedCount >= activeQty) {
           setShowAssignModal(false);
+          setActionSuccess(
+            "Authoritative state refreshed: reserved unit is already fully assigned."
+          );
         }
       }
       setActionError("");
@@ -1082,6 +1148,8 @@ export default function ReservationsPage() {
       );
       setUncertainOutcome(true);
       setUncertainReservationIds((prev) => new Set(prev).add(resId));
+    } finally {
+      setRefreshingReservation(false);
     }
   }
 
@@ -1845,17 +1913,33 @@ export default function ReservationsPage() {
                 </div>
               )}
 
-              {actionError && !showCheckInConfirm && !showCheckOutConfirm && !showConfirmModal && (
+              {(actionError || isCurrentReservationUncertain) &&
+                !showCheckInConfirm &&
+                !showCheckOutConfirm &&
+                !showConfirmModal &&
+                !showAssignModal && (
                 <div role="alert" aria-live="polite" className="rounded-xl bg-red-50 p-4 text-sm text-red-700 border border-red-200 space-y-2">
-                  <p className="font-semibold">Action error:</p>
-                  <p>{actionError}</p>
+                  {actionError ? (
+                    <>
+                      <p className="font-semibold">Action error:</p>
+                      <p>{actionError}</p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="font-semibold">Mutation outcome uncertain:</p>
+                      <p className="text-amber-800">
+                        A previous mutation had an uncertain outcome. Refresh reservation state to verify authoritative status before retrying.
+                      </p>
+                    </>
+                  )}
                   {isCurrentReservationUncertain && (
                     <button
                       type="button"
+                      disabled={refreshingReservation}
                       onClick={handleRefreshSelectedReservation}
-                      className="mt-2 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-[#24382e] border border-[#dce2d9] hover:bg-[#f5f6f3]"
+                      className="mt-2 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-[#24382e] border border-[#dce2d9] hover:bg-[#f5f6f3] disabled:opacity-50"
                     >
-                      Refresh reservation state
+                      {refreshingReservation ? "Refreshing state…" : "Refresh reservation state"}
                     </button>
                   )}
                 </div>
@@ -2530,10 +2614,11 @@ export default function ReservationsPage() {
                           </p>
                           <button
                             type="button"
+                            disabled={refreshingReservation}
                             onClick={handleRefreshSelectedReservation}
-                            className="mt-2 rounded-lg bg-white px-3 py-1 text-xs font-medium text-[#24382e] border border-[#dce2d9] hover:bg-[#f5f6f3]"
+                            className="mt-2 rounded-lg bg-white px-3 py-1 text-xs font-medium text-[#24382e] border border-[#dce2d9] hover:bg-[#f5f6f3] disabled:opacity-50"
                           >
-                            Refresh reservation state
+                            {refreshingReservation ? "Refreshing state…" : "Refresh reservation state"}
                           </button>
                         </div>
                       )}
@@ -2626,10 +2711,11 @@ export default function ReservationsPage() {
                           </p>
                           <button
                             type="button"
+                            disabled={refreshingReservation}
                             onClick={handleRefreshSelectedReservation}
-                            className="mt-2 rounded-lg bg-white px-3 py-1 text-xs font-medium text-[#24382e] border border-[#dce2d9] hover:bg-[#f5f6f3]"
+                            className="mt-2 rounded-lg bg-white px-3 py-1 text-xs font-medium text-[#24382e] border border-[#dce2d9] hover:bg-[#f5f6f3] disabled:opacity-50"
                           >
-                            Refresh reservation state
+                            {refreshingReservation ? "Refreshing state…" : "Refresh reservation state"}
                           </button>
                         </div>
                       )}
@@ -2728,10 +2814,11 @@ export default function ReservationsPage() {
                           </p>
                           <button
                             type="button"
+                            disabled={refreshingReservation}
                             onClick={handleRefreshSelectedReservation}
-                            className="mt-2 rounded-lg bg-white px-3 py-1 text-xs font-medium text-[#24382e] border border-[#dce2d9] hover:bg-[#f5f6f3]"
+                            className="mt-2 rounded-lg bg-white px-3 py-1 text-xs font-medium text-[#24382e] border border-[#dce2d9] hover:bg-[#f5f6f3] disabled:opacity-50"
                           >
-                            Refresh reservation state
+                            {refreshingReservation ? "Refreshing state…" : "Refresh reservation state"}
                           </button>
                         </div>
                       )}
@@ -2938,27 +3025,30 @@ export default function ReservationsPage() {
                     })()}
                   </div>
 
-                  {assignError && (
+                  {(assignError || isCurrentReservationUncertain) && (
                     <div
                       role="alert"
                       aria-live="polite"
                       className="rounded-xl bg-red-50 p-3 text-xs text-red-700 border border-red-200 space-y-2"
                     >
-                      <div>
-                        <p className="font-semibold">Assignment could not be completed:</p>
-                        <p className="mt-0.5">{assignError}</p>
-                      </div>
+                      {assignError && (
+                        <div>
+                          <p className="font-semibold">Assignment could not be completed:</p>
+                          <p className="mt-0.5">{assignError}</p>
+                        </div>
+                      )}
                       {isCurrentReservationUncertain && (
                         <div className="pt-1">
                           <p className="text-amber-800">
-                            The connection timed out or an ambiguous network error occurred. Please refresh the reservation state to verify if the assignment was created.
+                            The assignment outcome is uncertain due to a conflict, temporary lock contention, or network interruption. Refresh the reservation state to verify whether the assignment was committed before retrying.
                           </p>
                           <button
                             type="button"
+                            disabled={refreshingReservation}
                             onClick={handleRefreshSelectedReservation}
-                            className="mt-2 rounded-lg bg-white px-3 py-1 text-xs font-medium text-[#24382e] border border-[#dce2d9] hover:bg-[#f5f6f3]"
+                            className="mt-2 rounded-lg bg-white px-3 py-1 text-xs font-medium text-[#24382e] border border-[#dce2d9] hover:bg-[#f5f6f3] disabled:opacity-50"
                           >
-                            Refresh reservation state
+                            {refreshingReservation ? "Refreshing state…" : "Refresh reservation state"}
                           </button>
                         </div>
                       )}

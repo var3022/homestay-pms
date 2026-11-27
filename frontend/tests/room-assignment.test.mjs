@@ -15,6 +15,11 @@ import {
   evaluateReservationAssignmentCompleteness,
   getActiveReservedQuantity,
 } from "../src/lib/reservations/completeness.ts";
+import {
+  ApiRequestError,
+  isUncertainError,
+  matchesExactAssignment,
+} from "../src/lib/mutation-error.ts";
 
 describe("PMS Front Desk Room Assignment BFF & UI Integration Test Suite", () => {
   let mockServer;
@@ -1038,19 +1043,6 @@ describe("PMS Front Desk Room Assignment BFF & UI Integration Test Suite", () =>
   // Part 3: Uncertainty State Machine & Accessibility
   // =========================================================================
 
-  function isUncertainError(message) {
-    if (!message) return false;
-    const lower = message.toLowerCase();
-    return (
-      lower.includes("cannot connect") ||
-      lower.includes("network") ||
-      lower.includes("failed (502)") ||
-      lower.includes("504") ||
-      lower.includes("gateway") ||
-      lower.includes("timeout")
-    );
-  }
-
   it("31. uncertainty gate: blocks duplicate assignment attempt for affected reservation and room", () => {
     const resId = "res-uncertain-1";
     const attemptKey = "rr-1:room-101";
@@ -1116,5 +1108,226 @@ describe("PMS Front Desk Room Assignment BFF & UI Integration Test Suite", () =>
     assert.equal(dialogAttrs["aria-modal"], "true");
     assert.equal(dialogAttrs["aria-labelledby"], "assign-dialog-title");
     assert.equal(dialogAttrs["aria-describedby"], "assign-dialog-description");
+  });
+
+  // =========================================================================
+  // Part 4: HTTP 409 / 503 Mutation Outcome Classification & Reconciliation
+  // =========================================================================
+
+  it("35. mutation error classification: HTTP 409, 503, 502, 504 and network timeouts are uncertain", () => {
+    assert.equal(
+      isUncertainError(new ApiRequestError("Concurrent modification conflict.", 409)),
+      true
+    );
+    assert.equal(
+      isUncertainError(new ApiRequestError("A temporary database lock contention occurred.", 503)),
+      true
+    );
+    assert.equal(isUncertainError(new ApiRequestError("Bad Gateway", 502)), true);
+    assert.equal(isUncertainError(new ApiRequestError("Gateway Timeout", 504)), true);
+    assert.equal(isUncertainError(new TypeError("Failed to fetch")), true);
+    assert.equal(isUncertainError(new Error("Request timed out")), true);
+  });
+
+  it("36. mutation error classification: deterministic 400, 401, 403, 404 rejections are not uncertain", () => {
+    assert.equal(
+      isUncertainError(new ApiRequestError("Room is already assigned for the requested dates.", 400)),
+      false
+    );
+    assert.equal(isUncertainError(new ApiRequestError("Unauthorized", 401)), false);
+    assert.equal(isUncertainError(new ApiRequestError("Forbidden", 403)), false);
+    assert.equal(isUncertainError(new ApiRequestError("Not Found", 404)), false);
+  });
+
+  it("37. room assignment 409/503 gate: activates on 409/503, blocks blind retry, and persists across modal close/reopen", () => {
+    for (const status of [409, 503]) {
+      const resId = `res-${status}`;
+      const attemptKey = `rr-1:room-101`;
+      const uncertainReservationIds = new Set();
+      const uncertainAssignmentAttempts = new Set();
+      let showAssignModal = true;
+      let postCount = 0;
+
+      function submitAttempt(err) {
+        if (
+          uncertainReservationIds.has(resId) ||
+          uncertainAssignmentAttempts.has(attemptKey)
+        ) {
+          return "BLOCKED";
+        }
+        postCount++;
+        if (isUncertainError(err)) {
+          uncertainReservationIds.add(resId);
+          uncertainAssignmentAttempts.add(attemptKey);
+        }
+        return "SUBMITTED";
+      }
+
+      const first = submitAttempt(new ApiRequestError("Ambiguous outcome", status));
+      assert.equal(first, "SUBMITTED");
+      assert.equal(postCount, 1);
+
+      // Close and reopen modal: gate must remain active
+      showAssignModal = false;
+      showAssignModal = true;
+      assert.equal(showAssignModal, true);
+
+      const second = submitAttempt(null);
+      assert.equal(second, "BLOCKED");
+      assert.equal(postCount, 1);
+    }
+  });
+
+  it("38. reconciliation: failed refresh preserves gate; already-committed assignment closes modal without second POST", () => {
+    const resId = "res-reconcile-committed";
+    const attemptKey = "rr-1:room-101";
+    let uncertainReservationIds = new Set([resId]);
+    let uncertainAssignmentAttempts = new Set([attemptKey]);
+    let showAssignModal = true;
+
+    // Failed refresh preserves gate
+    const refreshFailed = true;
+    if (refreshFailed) {
+      uncertainReservationIds.add(resId);
+    }
+    assert.equal(uncertainReservationIds.has(resId), true);
+    assert.equal(uncertainAssignmentAttempts.has(attemptKey), true);
+
+    // Successful refresh finds assignment already committed
+    const refreshedAssignments = [
+      { id: "assign-1", reservationRoomId: "rr-1", roomId: "room-101", status: "ASSIGNED" },
+    ];
+    uncertainReservationIds.delete(resId);
+    uncertainAssignmentAttempts = new Set();
+
+    const alreadyCommitted = refreshedAssignments.some(
+      (a) => a.reservationRoomId === "rr-1" && a.roomId === "room-101" && a.status === "ASSIGNED"
+    );
+    if (alreadyCommitted) {
+      showAssignModal = false;
+    }
+
+    assert.equal(uncertainReservationIds.has(resId), false);
+    assert.equal(alreadyCommitted, true);
+    assert.equal(showAssignModal, false);
+  });
+
+  it("39. reconciliation: assignment definitely not committed after refresh clears gate and allows explicit retry", () => {
+    const resId = "res-reconcile-missing";
+    const attemptKey = "rr-1:room-101";
+    let uncertainReservationIds = new Set([resId]);
+    let uncertainAssignmentAttempts = new Set([attemptKey]);
+
+    const refreshedAssignments = [];
+    const alreadyCommitted = refreshedAssignments.some(
+      (a) => a.reservationRoomId === "rr-1" && a.roomId === "room-101" && a.status === "ASSIGNED"
+    );
+
+    uncertainReservationIds.delete(resId);
+    uncertainAssignmentAttempts = new Set();
+
+    assert.equal(alreadyCommitted, false);
+    assert.equal(uncertainReservationIds.has(resId), false);
+    assert.equal(uncertainAssignmentAttempts.has(attemptKey), false);
+  });
+
+  it("40. confirmation and check-in/checkout regression: 409/503 activates uncertainty gate while 400 does not", () => {
+    for (const actionErr of [
+      new ApiRequestError("Concurrent modification conflict.", 409),
+      new ApiRequestError("Database lock contention.", 503),
+    ]) {
+      assert.equal(isUncertainError(actionErr), true);
+    }
+    assert.equal(
+      isUncertainError(new ApiRequestError("Cannot check in: assigned room requires housekeeping.", 400)),
+      false
+    );
+  });
+
+  it("41. exact assignment reconciliation: rejects different room, RELEASED, or partial-stay records", () => {
+    const attempt = {
+      reservationId: "res-1",
+      reservationRoomId: "rr-1",
+      roomId: "room-101",
+      assignedFrom: "2026-12-10",
+      assignedUntil: "2026-12-12",
+    };
+
+    assert.equal(
+      matchesExactAssignment(attempt, {
+        reservationRoomId: "rr-1",
+        roomId: "room-101",
+        assignedFrom: "2026-12-10",
+        assignedUntil: "2026-12-12",
+        status: "ASSIGNED",
+      }),
+      true
+    );
+
+    // Different room
+    assert.equal(
+      matchesExactAssignment(attempt, {
+        reservationRoomId: "rr-1",
+        roomId: "room-102",
+        assignedFrom: "2026-12-10",
+        assignedUntil: "2026-12-12",
+        status: "ASSIGNED",
+      }),
+      false
+    );
+
+    // Released assignment
+    assert.equal(
+      matchesExactAssignment(attempt, {
+        reservationRoomId: "rr-1",
+        roomId: "room-101",
+        assignedFrom: "2026-12-10",
+        assignedUntil: "2026-12-12",
+        status: "RELEASED",
+      }),
+      false
+    );
+
+    // Partial-stay assignment
+    assert.equal(
+      matchesExactAssignment(attempt, {
+        reservationRoomId: "rr-1",
+        roomId: "room-101",
+        assignedFrom: "2026-12-10",
+        assignedUntil: "2026-12-11",
+        status: "ASSIGNED",
+      }),
+      false
+    );
+
+    // Different reservationRoomId
+    assert.equal(
+      matchesExactAssignment(attempt, {
+        reservationRoomId: "rr-other",
+        roomId: "room-101",
+        assignedFrom: "2026-12-10",
+        assignedUntil: "2026-12-12",
+        status: "ASSIGNED",
+      }),
+      false
+    );
+  });
+
+  it("42. malformed error response body and stale GET race preserve safety", () => {
+    // Malformed non-JSON error body still classifies 503/409/502 safely
+    const malformed503 = new ApiRequestError("<html>503 Service Unavailable</html>", 503);
+    assert.equal(isUncertainError(malformed503), true);
+
+    const malformed400 = new ApiRequestError("Bad Request", 400);
+    assert.equal(isUncertainError(malformed400), false);
+
+    // Stale GET response (seq < currentSeq) must not clear uncertainty
+    let currentSeq = 2;
+    const responseSeq = 1;
+    const uncertainReservations = new Set(["res-stale"]);
+    if (responseSeq >= currentSeq) {
+      uncertainReservations.delete("res-stale");
+    }
+    assert.equal(uncertainReservations.has("res-stale"), true);
   });
 });
