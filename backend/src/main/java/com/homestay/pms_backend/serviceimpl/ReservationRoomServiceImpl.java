@@ -55,7 +55,7 @@ public class ReservationRoomServiceImpl implements ReservationRoomService {
             throw new BusinessValidationException("Cannot add rooms to a no-show reservation");
         }
 
-        RoomType roomType = roomTypeRepository.findById(request.getRoomTypeId())
+        RoomType roomType = roomTypeRepository.findByIdForUpdate(request.getRoomTypeId())
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Room type not found with id: " + request.getRoomTypeId()
                 ));

@@ -157,7 +157,7 @@ class ReservationRoomServiceImplTest {
         when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         roomType.setPropertyId(UUID.randomUUID()); // different property
-        when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
+        when(roomTypeRepository.findByIdForUpdate(roomTypeId)).thenReturn(Optional.of(roomType));
 
         assertThatThrownBy(() -> reservationRoomService.addReservationRoom(addRequest))
                 .isInstanceOf(BusinessValidationException.class)
@@ -172,7 +172,7 @@ class ReservationRoomServiceImplTest {
         when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         roomType.setActive(false);
-        when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
+        when(roomTypeRepository.findByIdForUpdate(roomTypeId)).thenReturn(Optional.of(roomType));
 
         assertThatThrownBy(() -> reservationRoomService.addReservationRoom(addRequest))
                 .isInstanceOf(BusinessValidationException.class)
@@ -185,7 +185,7 @@ class ReservationRoomServiceImplTest {
     @DisplayName("addReservationRoom rejects when requested quantity exceeds available inventory")
     void addReservationRoom_rejectsWhenQuantityExceedsAvailableInventory() {
         when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
-        when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
+        when(roomTypeRepository.findByIdForUpdate(roomTypeId)).thenReturn(Optional.of(roomType));
         when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of());
 
         // 3 active non-OOS rooms
@@ -209,7 +209,7 @@ class ReservationRoomServiceImplTest {
     @DisplayName("addReservationRoom rejects when total required quantity (existing + requested) exceeds available inventory")
     void addReservationRoom_rejectsWhenTotalRequiredQuantityExceedsInventory() {
         when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
-        when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
+        when(roomTypeRepository.findByIdForUpdate(roomTypeId)).thenReturn(Optional.of(roomType));
 
         // Reservation already has 1 room of this type
         ReservationRoom existingRoom = new ReservationRoom();
@@ -247,7 +247,7 @@ class ReservationRoomServiceImplTest {
     @DisplayName("addReservationRoom correctly handles room type already present when sufficient inventory exists")
     void addReservationRoom_succeedsWithExistingRoomType_whenSufficientInventory() {
         when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
-        when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
+        when(roomTypeRepository.findByIdForUpdate(roomTypeId)).thenReturn(Optional.of(roomType));
 
         // Reservation already has 1 active room of this type
         ReservationRoom existingRoom = new ReservationRoom();
@@ -299,7 +299,7 @@ class ReservationRoomServiceImplTest {
     @DisplayName("addReservationRoom ignores CANCELLED ReservationRoom records when calculating existing active quantity")
     void addReservationRoom_ignoresCancelledReservationRoomRecords_whenCalculatingExistingActiveQuantity() {
         when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
-        when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
+        when(roomTypeRepository.findByIdForUpdate(roomTypeId)).thenReturn(Optional.of(roomType));
 
         // CANCELLED reservation-room record with quantity = 2 and cancelledQuantity = 0
         ReservationRoom cancelledRoom = new ReservationRoom();
@@ -351,7 +351,7 @@ class ReservationRoomServiceImplTest {
     @DisplayName("addReservationRoom succeeds when inventory is available")
     void addReservationRoom_succeedsWhenInventoryAvailable() {
         when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
-        when(roomTypeRepository.findById(roomTypeId)).thenReturn(Optional.of(roomType));
+        when(roomTypeRepository.findByIdForUpdate(roomTypeId)).thenReturn(Optional.of(roomType));
         when(reservationRoomRepository.findByReservationId(reservationId)).thenReturn(List.of());
 
         when(roomRepository.countByPropertyIdAndRoomTypeIdAndActiveTrueAndStatusNot(

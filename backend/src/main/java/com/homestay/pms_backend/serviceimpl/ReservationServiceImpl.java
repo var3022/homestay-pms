@@ -135,6 +135,11 @@ public class ReservationServiceImpl implements ReservationService {
                                 request.getCheckInDate(),
                                 request.getCheckOutDate());
 
+                lockRoomTypesInDeterministicOrder(
+                                request.getReservationRooms().stream()
+                                                .map(r -> r.getRoomTypeId())
+                                                .toList());
+
                 validateRequestedRoomTypesAndAvailability(request);
 
                 Reservation reservation = reservationMapper.toEntity(request);
@@ -262,6 +267,7 @@ public class ReservationServiceImpl implements ReservationService {
                 if (datesChanged) {
                         List<ReservationRoom> lockedRooms = reservationRoomRepository
                                         .findByReservationIdForUpdate(reservation.getId());
+                        lockRoomTypesForActiveReservationRooms(lockedRooms);
                         validateDateChangeSafety(reservation, targetCheckInDate, targetCheckOutDate, lockedRooms);
                 }
 
@@ -359,6 +365,31 @@ public class ReservationServiceImpl implements ReservationService {
                                                                 + ", available: "
                                                                 + Math.max(availableRooms, 0L));
                         }
+                }
+        }
+
+        private void lockRoomTypesForActiveReservationRooms(List<ReservationRoom> reservationRooms) {
+                List<UUID> activeRoomTypeIds = reservationRooms.stream()
+                                .filter(rr -> rr.getStatus() != ReservationRoomStatus.CANCELLED)
+                                .filter(rr -> (rr.getQuantity() - rr.getCancelledQuantity()) > 0)
+                                .map(ReservationRoom::getRoomTypeId)
+                                .toList();
+                lockRoomTypesInDeterministicOrder(activeRoomTypeIds);
+        }
+
+        private void lockRoomTypesInDeterministicOrder(Collection<UUID> roomTypeIds) {
+                if (roomTypeIds == null || roomTypeIds.isEmpty()) {
+                        return;
+                }
+                List<UUID> sortedDistinctIds = roomTypeIds.stream()
+                                .filter(java.util.Objects::nonNull)
+                                .distinct()
+                                .sorted()
+                                .toList();
+                // Acquire row locks sequentially in sorted UUID order to guarantee deterministic
+                // lock ordering regardless of PostgreSQL's IN-list query plan.
+                for (UUID rtId : sortedDistinctIds) {
+                        roomTypeRepository.findByIdForUpdate(rtId);
                 }
         }
 
@@ -599,7 +630,8 @@ public class ReservationServiceImpl implements ReservationService {
                                                         + ". Only PENDING reservations can be confirmed.");
                 }
 
-                // 6. Exclusion-safe availability re-validation
+                // 6. Acquire inventory locks and run exclusion-safe availability re-validation
+                lockRoomTypesForActiveReservationRooms(lockedRooms);
                 validateReservationRoomsAvailabilityExcludingSelf(reservation, lockedRooms);
 
                 // 7. Transition status

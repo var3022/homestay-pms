@@ -71,5 +71,21 @@ public interface ReservationRoomRepository
             @Param("statuses") List<ReservationStatus> statuses,
             @Param("excludeReservationId") UUID excludeReservationId
     );
+
+    @Query("""
+            SELECT r.checkInDate, r.checkOutDate, (rr.quantity - rr.cancelledQuantity)
+            FROM ReservationRoom rr
+            JOIN Reservation r ON r.id = rr.reservationId
+            WHERE r.propertyId = :propertyId
+              AND rr.roomTypeId = :roomTypeId
+              AND r.status IN :statuses
+              AND rr.status <> com.homestay.pms_backend.enums.ReservationRoomStatus.CANCELLED
+              AND (rr.quantity - rr.cancelledQuantity) > 0
+            """)
+    List<Object[]> findActiveDemandIntervals(
+            @Param("propertyId") UUID propertyId,
+            @Param("roomTypeId") UUID roomTypeId,
+            @Param("statuses") List<ReservationStatus> statuses
+    );
 }
 

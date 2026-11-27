@@ -146,6 +146,57 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleDataAccessException(
             DataAccessException exception) {
 
+        java.sql.SQLException sqlException = findSqlException(exception);
+        if (sqlException != null) {
+            String sqlState = sqlException.getSQLState();
+            String msg = sqlException.getMessage() != null ? sqlException.getMessage() : "";
+
+            // PostgreSQL exclusion constraint violation (SQLSTATE 23P01)
+            if ("23P01".equals(sqlState) && msg.contains("ex_room_assignments_no_overlap")) {
+                log.warn("Room assignment exclusion constraint conflict (SQLSTATE 23P01): {}", msg);
+                return ResponseEntity
+                        .status(HttpStatus.CONFLICT)
+                        .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                        .header(HttpHeaders.PRAGMA, "no-cache")
+                        .body(new ErrorResponse(
+                                Instant.now(),
+                                HttpStatus.CONFLICT.value(),
+                                "Conflict",
+                                "Room is already assigned for the requested dates."
+                        ));
+            }
+
+            // PostgreSQL serialization failure (SQLSTATE 40001)
+            if ("40001".equals(sqlState)) {
+                log.warn("Database serialization failure (SQLSTATE 40001): {}", msg);
+                return ResponseEntity
+                        .status(HttpStatus.CONFLICT)
+                        .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                        .header(HttpHeaders.PRAGMA, "no-cache")
+                        .body(new ErrorResponse(
+                                Instant.now(),
+                                HttpStatus.CONFLICT.value(),
+                                "Conflict",
+                                "Concurrent modification conflict. Please refresh and try again."
+                        ));
+            }
+
+            // PostgreSQL deadlock detected (SQLSTATE 40P01) — never classify as normal business conflict
+            if ("40P01".equals(sqlState)) {
+                log.error("Database deadlock detected (SQLSTATE 40P01)", exception);
+                return ResponseEntity
+                        .status(HttpStatus.SERVICE_UNAVAILABLE)
+                        .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                        .header(HttpHeaders.PRAGMA, "no-cache")
+                        .body(new ErrorResponse(
+                                Instant.now(),
+                                HttpStatus.SERVICE_UNAVAILABLE.value(),
+                                "Service Unavailable",
+                                "A temporary database lock contention occurred. Please refresh state before retrying."
+                        ));
+            }
+        }
+
         log.error("Internal database access exception encountered during request processing", exception);
 
         ErrorResponse response = new ErrorResponse(
@@ -160,6 +211,17 @@ public class GlobalExceptionHandler {
                 .header(HttpHeaders.CACHE_CONTROL, "no-store")
                 .header(HttpHeaders.PRAGMA, "no-cache")
                 .body(response);
+    }
+
+    private static java.sql.SQLException findSqlException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof java.sql.SQLException sqlEx) {
+                return sqlEx;
+            }
+            current = current.getCause();
+        }
+        return null;
     }
 
     @ExceptionHandler(ResourceNotFoundException.class)

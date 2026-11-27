@@ -156,7 +156,7 @@ class RoomAssignmentServiceImplTest {
         room.setStatus(RoomStatus.OUT_OF_SERVICE);
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
-        when(roomRepository.findById(roomId)).thenReturn(Optional.of(room));
+        when(roomRepository.findByIdForUpdate(roomId)).thenReturn(Optional.of(room));
 
         assertThatThrownBy(() -> roomAssignmentService.assignRoom(assignRequest))
                 .isInstanceOf(BusinessValidationException.class)
@@ -171,7 +171,7 @@ class RoomAssignmentServiceImplTest {
         room.setActive(false);
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
-        when(roomRepository.findById(roomId)).thenReturn(Optional.of(room));
+        when(roomRepository.findByIdForUpdate(roomId)).thenReturn(Optional.of(room));
 
         assertThatThrownBy(() -> roomAssignmentService.assignRoom(assignRequest))
                 .isInstanceOf(BusinessValidationException.class)
@@ -187,7 +187,7 @@ class RoomAssignmentServiceImplTest {
         room.setStatus(RoomStatus.OCCUPIED);
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
-        when(roomRepository.findById(roomId)).thenReturn(Optional.of(room));
+        when(roomRepository.findByIdForUpdate(roomId)).thenReturn(Optional.of(room));
 
         // No overlapping assignment for the requested future dates Nov 10 - Nov 12
         when(roomAssignmentRepository
@@ -223,7 +223,7 @@ class RoomAssignmentServiceImplTest {
     void assignRoom_rejectsOverlappingAssignment() {
         when(reservationRoomRepository.findByIdForUpdate(reservationRoomId)).thenReturn(Optional.of(reservationRoom));
         when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
-        when(roomRepository.findById(roomId)).thenReturn(Optional.of(room));
+        when(roomRepository.findByIdForUpdate(roomId)).thenReturn(Optional.of(room));
 
         when(roomAssignmentRepository
                 .findByReservationRoomIdAndStatusAndAssignedFromLessThanAndAssignedUntilGreaterThan(

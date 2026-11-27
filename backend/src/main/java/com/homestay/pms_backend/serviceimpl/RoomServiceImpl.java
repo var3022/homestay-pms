@@ -8,20 +8,26 @@ import com.homestay.pms_backend.dto.response.RoomResponse;
 import com.homestay.pms_backend.entity.Room;
 import com.homestay.pms_backend.entity.RoomType;
 import com.homestay.pms_backend.enums.HousekeepingStatus;
+import com.homestay.pms_backend.enums.ReservationStatus;
 import com.homestay.pms_backend.enums.RoomStatus;
 import com.homestay.pms_backend.exception.BusinessValidationException;
 import com.homestay.pms_backend.exception.DuplicateResourceException;
 import com.homestay.pms_backend.exception.ResourceNotFoundException;
 import com.homestay.pms_backend.mapper.RoomMapper;
 import com.homestay.pms_backend.repository.PropertyRepository;
+import com.homestay.pms_backend.repository.ReservationRoomRepository;
 import com.homestay.pms_backend.repository.RoomAssignmentRepository;
 import com.homestay.pms_backend.repository.RoomRepository;
 import com.homestay.pms_backend.repository.RoomTypeRepository;
 import com.homestay.pms_backend.service.RoomService;
+import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 
@@ -34,6 +40,8 @@ public class RoomServiceImpl implements RoomService {
     private final PropertyRepository propertyRepository;
     private final RoomTypeRepository roomTypeRepository;
     private final RoomAssignmentRepository roomAssignmentRepository;
+    private final ReservationRoomRepository reservationRoomRepository;
+    private final EntityManager entityManager;
     private final RoomMapper roomMapper;
 
     @Override
@@ -152,17 +160,37 @@ public class RoomServiceImpl implements RoomService {
     @Override
     public void deactivateRoom(UUID id) {
 
-        Room room = roomRepository.findByIdForUpdate(id)
+        UUID roomTypeId = roomRepository.findRoomTypeIdById(id)
                 .orElseThrow(() ->
                         new ResourceNotFoundException(
                                 "Room not found with id: " + id
                         )
                 );
 
+        // Lock Level 3 (RoomType) before Level 4 (Room) to match global lock order
+        RoomType roomType = roomTypeRepository.findByIdForUpdate(roomTypeId)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "Room type not found with id: " + roomTypeId
+                        )
+                );
+
+        Room room = roomRepository.findByIdForUpdate(id)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "Room not found with id: " + id
+                        )
+                );
+        entityManager.refresh(room);
+
         if (roomAssignmentRepository.hasActiveCheckedInReservation(id)) {
             throw new BusinessValidationException(
                     "Cannot deactivate room while it is occupied by an active checked-in reservation"
             );
+        }
+
+        if (room.isActive() && room.getStatus() != RoomStatus.OUT_OF_SERVICE) {
+            validateCapacityReductionSafe(room.getPropertyId(), roomType);
         }
 
         room.setActive(false);
@@ -258,11 +286,25 @@ public class RoomServiceImpl implements RoomService {
             UUID id,
             RoomStatusUpdateRequest request) {
 
+        UUID roomTypeId = roomRepository.findRoomTypeIdById(id)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "Room not found with id: " + id
+                        ));
+
+        // Lock Level 3 (RoomType) before Level 4 (Room) to match global lock order
+        RoomType roomType = roomTypeRepository.findByIdForUpdate(roomTypeId)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "Room type not found with id: " + roomTypeId
+                        ));
+
         Room room = roomRepository.findByIdForUpdate(id)
                 .orElseThrow(() ->
                         new ResourceNotFoundException(
                                 "Room not found with id: " + id
                         ));
+        entityManager.refresh(room);
 
         RoomStatus newStatus = request.getStatus();
 
@@ -278,11 +320,74 @@ public class RoomServiceImpl implements RoomService {
             );
         }
 
+        if (newStatus == RoomStatus.OUT_OF_SERVICE
+                && room.isActive()
+                && room.getStatus() != RoomStatus.OUT_OF_SERVICE) {
+            validateCapacityReductionSafe(room.getPropertyId(), roomType);
+        }
+
         room.setStatus(newStatus);
 
         Room savedRoom = roomRepository.saveAndFlush(room);
 
         return roomMapper.toResponse(savedRoom);
+    }
+
+    private void validateCapacityReductionSafe(UUID propertyId, RoomType roomType) {
+        long currentSellable = roomRepository.countByPropertyIdAndRoomTypeIdAndActiveTrueAndStatusNot(
+                propertyId,
+                roomType.getId(),
+                RoomStatus.OUT_OF_SERVICE);
+        long remainingSellable = Math.max(currentSellable - 1, 0L);
+
+        List<Object[]> intervals = reservationRoomRepository.findActiveDemandIntervals(
+                propertyId,
+                roomType.getId(),
+                List.of(
+                        ReservationStatus.PENDING,
+                        ReservationStatus.CONFIRMED,
+                        ReservationStatus.CHECKED_IN
+                ));
+
+        if (intervals.isEmpty()) {
+            return;
+        }
+
+        record DemandBoundary(LocalDate date, long delta) {}
+        List<DemandBoundary> boundaries = new ArrayList<>(intervals.size() * 2);
+        for (Object[] row : intervals) {
+            LocalDate checkIn = (LocalDate) row[0];
+            LocalDate checkOut = (LocalDate) row[1];
+            long qty = ((Number) row[2]).longValue();
+            if (qty > 0 && checkOut.isAfter(checkIn)) {
+                boundaries.add(new DemandBoundary(checkIn, qty));
+                boundaries.add(new DemandBoundary(checkOut, -qty));
+            }
+        }
+
+        // Half-open [checkIn, checkOut): process departures (-qty) before arrivals (+qty) on the same date
+        boundaries.sort(Comparator.comparing(DemandBoundary::date)
+                .thenComparingLong(DemandBoundary::delta));
+
+        long runningDemand = 0L;
+        long peakDemand = 0L;
+        LocalDate peakDate = null;
+
+        for (DemandBoundary boundary : boundaries) {
+            runningDemand += boundary.delta();
+            if (runningDemand > peakDemand) {
+                peakDemand = runningDemand;
+                peakDate = boundary.date();
+            }
+        }
+
+        if (remainingSellable < peakDemand) {
+            throw new BusinessValidationException(
+                    "Cannot reduce sellable capacity for room type '" + roomType.getName()
+                            + "': active reservations require up to " + peakDemand
+                            + " room(s) on overlapping dates (including " + peakDate
+                            + "), leaving only " + remainingSellable + " sellable room(s).");
+        }
     }
 
     @Override

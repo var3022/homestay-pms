@@ -97,12 +97,13 @@ public class RoomAssignmentServiceImpl implements RoomAssignmentService {
         }
 
         Room room =
-                roomRepository.findById(request.getRoomId())
+                roomRepository.findByIdForUpdate(request.getRoomId())
                         .orElseThrow(() ->
                                 new ResourceNotFoundException(
                                         "Room not found with id: "
                                                 + request.getRoomId()
                                 ));
+        entityManager.refresh(room);
 
         if (!room.isActive()) {
             throw new BusinessValidationException(

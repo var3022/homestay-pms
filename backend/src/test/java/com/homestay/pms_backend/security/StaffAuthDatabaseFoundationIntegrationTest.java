@@ -34,10 +34,36 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private org.springframework.core.env.Environment environment;
+
+    private final List<UUID> createdTestUserIds = new java.util.ArrayList<>();
+
     private static final String CLEAN_VALIDATION_DB_URL = "jdbc:postgresql://localhost:5433/v8_clean_validation_db";
     private static final String DISPOSABLE_DB_URL = "jdbc:postgresql://localhost:5433/v7_disposable_db";
     private static final String ADMIN_USER = "pms_admin";
     private static final String ADMIN_PASS = "disposable_pass";
+
+    @org.junit.jupiter.api.AfterEach
+    void cleanUpCreatedTestUsers() {
+        if (createdTestUserIds.isEmpty()) {
+            return;
+        }
+        JdbcTemplate adminJdbc = createAdminJdbcTemplate();
+        for (UUID userId : createdTestUserIds) {
+            cleanUpAdminUser(adminJdbc, userId);
+        }
+        createdTestUserIds.clear();
+    }
+
+    private JdbcTemplate createAuthJdbcTemplate() {
+        DriverManagerDataSource authDs = new DriverManagerDataSource();
+        authDs.setDriverClassName("org.postgresql.Driver");
+        authDs.setUrl(environment.getProperty("auth.datasource.url", DISPOSABLE_DB_URL));
+        authDs.setUsername(environment.getProperty("auth.datasource.username", "pms_auth"));
+        authDs.setPassword(environment.getProperty("auth.datasource.password", ADMIN_PASS));
+        return new JdbcTemplate(authDs);
+    }
 
     private JdbcTemplate createAdminJdbcTemplate() {
         DriverManagerDataSource adminDs = new DriverManagerDataSource();
@@ -185,78 +211,78 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     // =========================================================================
 
     @Test
-    @Transactional
     @DisplayName("Staff user insertion succeeds with valid standard BCrypt hash (60 chars) and normalized email")
     void shouldInsertValidStaffUser() {
-        UUID userId = UUID.randomUUID();
-        jdbcTemplate.update(
-                "INSERT INTO staff_users (id, email, password_hash, first_name, last_name, phone) " +
-                "VALUES (?, 'admin@homestay.com', '$2a$12$e80yq7KjVpEw3W6xK9qXxeQjJcM1q4RkQ9aVbY2vK8n1o2p3q4r5s', 'Admin', 'User', '+919876543210')",
-                userId
-        );
+        withAdminTransaction(adminJdbc -> {
+            UUID userId = UUID.randomUUID();
+            adminJdbc.update(
+                    "INSERT INTO staff_users (id, email, password_hash, first_name, last_name, phone) " +
+                    "VALUES (?, 'admin@homestay.com', '$2a$12$e80yq7KjVpEw3W6xK9qXxeQjJcM1q4RkQ9aVbY2vK8n1o2p3q4r5s', 'Admin', 'User', '+919876543210')",
+                    userId
+            );
 
-        Map<String, Object> user = jdbcTemplate.queryForMap(
-                "SELECT email, is_active, is_locked, failed_login_attempts FROM staff_users WHERE id = ?",
-                userId
-        );
-        assertThat(user.get("email")).isEqualTo("admin@homestay.com");
-        assertThat(user.get("is_active")).isEqualTo(true);
-        assertThat(user.get("is_locked")).isEqualTo(false);
-        assertThat(user.get("failed_login_attempts")).isEqualTo(0);
+            Map<String, Object> user = adminJdbc.queryForMap(
+                    "SELECT email, is_active, is_locked, failed_login_attempts FROM staff_users WHERE id = ?",
+                    userId
+            );
+            assertThat(user.get("email")).isEqualTo("admin@homestay.com");
+            assertThat(user.get("is_active")).isEqualTo(true);
+            assertThat(user.get("is_locked")).isEqualTo(false);
+            assertThat(user.get("failed_login_attempts")).isEqualTo(0);
+        });
     }
 
     @Test
-    @Transactional
     @DisplayName("Staff user insertion fails when password hash is raw/plaintext or does not match hash format")
     void shouldRejectRawPlaintextOrInvalidPasswordHash() {
         // Raw plaintext password rejected
-        assertThatThrownBy(() -> jdbcTemplate.update(
+        withAdminTransaction(adminJdbc -> assertThatThrownBy(() -> adminJdbc.update(
                 "INSERT INTO staff_users (email, password_hash, first_name) " +
                 "VALUES ('rawpass@homestay.com', 'raw_unhashed_secret_password', 'Admin')"
         ))
                 .isInstanceOf(DataAccessException.class)
                 .rootCause()
-                .hasMessageContaining("chk_staff_users_password_hash");
+                .hasMessageContaining("chk_staff_users_password_hash"));
 
         // Truncated hash rejected
-        assertThatThrownBy(() -> jdbcTemplate.update(
+        withAdminTransaction(adminJdbc -> assertThatThrownBy(() -> adminJdbc.update(
                 "INSERT INTO staff_users (email, password_hash, first_name) " +
                 "VALUES ('truncated@homestay.com', '$2a$12$short', 'Admin')"
         ))
                 .isInstanceOf(DataAccessException.class)
                 .rootCause()
-                .hasMessageContaining("chk_staff_users_password_hash");
+                .hasMessageContaining("chk_staff_users_password_hash"));
     }
 
     @Test
-    @Transactional
     @DisplayName("Staff user insertion fails when email is not lowercase or trimmed")
     void shouldRejectUnnormalizedEmail() {
-        assertThatThrownBy(() -> jdbcTemplate.update(
+        withAdminTransaction(adminJdbc -> assertThatThrownBy(() -> adminJdbc.update(
                 "INSERT INTO staff_users (email, password_hash, first_name) " +
                 "VALUES ('ADMIN@HOMESTAY.COM', '$2a$12$e80yq7KjVpEw3W6xK9qXxeQjJcM1q4RkQ9aVbY2vK8n1o2p3q4r5s', 'Admin')"
         ))
                 .isInstanceOf(DataAccessException.class)
                 .rootCause()
-                .hasMessageContaining("chk_staff_users_email_format");
+                .hasMessageContaining("chk_staff_users_email_format"));
     }
 
     @Test
-    @Transactional
     @DisplayName("Duplicate email registration is strictly rejected by unique constraint")
     void shouldRejectDuplicateEmail() {
-        jdbcTemplate.update(
-                "INSERT INTO staff_users (email, password_hash, first_name) " +
-                "VALUES ('duplicate@homestay.com', '$2a$12$e80yq7KjVpEw3W6xK9qXxeQjJcM1q4RkQ9aVbY2vK8n1o2p3q4r5s', 'First')"
-        );
+        withAdminTransaction(adminJdbc -> {
+            adminJdbc.update(
+                    "INSERT INTO staff_users (email, password_hash, first_name) " +
+                    "VALUES ('duplicate@homestay.com', '$2a$12$e80yq7KjVpEw3W6xK9qXxeQjJcM1q4RkQ9aVbY2vK8n1o2p3q4r5s', 'First')"
+            );
 
-        assertThatThrownBy(() -> jdbcTemplate.update(
-                "INSERT INTO staff_users (email, password_hash, first_name) " +
-                "VALUES ('duplicate@homestay.com', '$2a$12$e80yq7KjVpEw3W6xK9qXxeQjJcM1q4RkQ9aVbY2vK8n1o2p3q4r5s', 'Second')"
-        ))
-                .isInstanceOf(DataAccessException.class)
-                .rootCause()
-                .hasMessageContaining("uq_staff_users_email");
+            assertThatThrownBy(() -> adminJdbc.update(
+                    "INSERT INTO staff_users (email, password_hash, first_name) " +
+                    "VALUES ('duplicate@homestay.com', '$2a$12$e80yq7KjVpEw3W6xK9qXxeQjJcM1q4RkQ9aVbY2vK8n1o2p3q4r5s', 'Second')"
+            ))
+                    .isInstanceOf(DataAccessException.class)
+                    .rootCause()
+                    .hasMessageContaining("uq_staff_users_email");
+        });
     }
 
     // =========================================================================
@@ -264,17 +290,22 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     // =========================================================================
 
     private UUID createTestUser(String email) {
-        UUID id = UUID.randomUUID();
-        jdbcTemplate.update(
-                "INSERT INTO staff_users (id, email, password_hash, first_name) " +
-                "VALUES (?, ?, '$2a$12$e80yq7KjVpEw3W6xK9qXxeQjJcM1q4RkQ9aVbY2vK8n1o2p3q4r5s', 'Test')",
-                id, email
-        );
+        UUID id = createAdminTestUser(createAdminJdbcTemplate(), email);
+        createdTestUserIds.add(id);
         return id;
     }
 
     private UUID getExistingPropertyId() {
-        return jdbcTemplate.queryForObject("SELECT id FROM properties LIMIT 1", UUID.class);
+        List<UUID> ids = jdbcTemplate.queryForList("SELECT id FROM properties LIMIT 1", UUID.class);
+        if (!ids.isEmpty()) {
+            return ids.get(0);
+        }
+        return jdbcTemplate.queryForObject(
+                "INSERT INTO properties (name, code, address_line1, city, state) "
+                + "VALUES ('Auth Test Property', ?, '123 Test St', 'Kochi', 'Kerala') RETURNING id",
+                UUID.class,
+                "AUTH-TEST-" + UUID.randomUUID().toString().substring(0, 8)
+        );
     }
 
     private void callVoidFunction(String sql, Object... args) {
@@ -712,15 +743,16 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     @Transactional
     @DisplayName("Operational Update: Runtime role pms_app can update profile fields (first_name, last_name, phone, updated_at)")
     void shouldAllowDirectUpdateOnOperationalStaffUserFields() {
-        UUID userId = createTestUser("profile_update@homestay.com");
+        UUID userId = createTestUser("profile_update_" + UUID.randomUUID() + "@homestay.com");
+        JdbcTemplate authJdbc = createAuthJdbcTemplate();
 
-        int rows = jdbcTemplate.update(
+        int rows = authJdbc.update(
                 "UPDATE staff_users SET first_name = 'UpdatedFirst', last_name = 'UpdatedLast', phone = '+1-555-0199', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 userId
         );
         assertThat(rows).isEqualTo(1);
 
-        Map<String, Object> user = jdbcTemplate.queryForMap(
+        Map<String, Object> user = authJdbc.queryForMap(
                 "SELECT first_name, last_name, phone FROM staff_users WHERE id = ?",
                 userId
         );
@@ -982,21 +1014,22 @@ class StaffAuthDatabaseFoundationIntegrationTest {
         ))
                 .isInstanceOf(DataAccessException.class)
                 .rootCause()
-                .hasMessageContaining("Direct assertion of login success requires pms_admin database credentials");
+                .hasMessageContaining("permission denied for function fn_record_staff_login_attempt");
     }
 
     @Test
     @DisplayName("Login attempt procedure tracks failed attempts under pms_app, and allows pms_admin to record success and trigger lockout")
     void shouldHandleLoginAttemptsAndLockout() {
         JdbcTemplate adminJdbc = createAdminJdbcTemplate();
+        JdbcTemplate authJdbc = createAuthJdbcTemplate();
         UUID userId = null;
         try {
             String email = "lockout_flow_" + UUID.randomUUID() + "@homestay.com";
             userId = createAdminTestUser(adminJdbc, email);
 
-            // 1. 3 failed attempts via runtime role pms_app
+            // 1. 3 failed attempts via runtime auth role pms_auth
             for (int i = 1; i <= 3; i++) {
-                Boolean res = jdbcTemplate.queryForObject(
+                Boolean res = authJdbc.queryForObject(
                         "SELECT fn_record_staff_login_attempt(?, FALSE, '127.0.0.1', 'JUnit')",
                         Boolean.class,
                         email
@@ -1027,9 +1060,9 @@ class StaffAuthDatabaseFoundationIntegrationTest {
             assertThat(state.get("is_locked")).isEqualTo(false);
             assertThat(state.get("lockout_until")).isNull();
 
-            // 3. 5 consecutive failed attempts via pms_app trigger lockout
+            // 3. 5 consecutive failed attempts via pms_auth trigger lockout
             for (int i = 1; i <= 5; i++) {
-                jdbcTemplate.queryForObject(
+                authJdbc.queryForObject(
                         "SELECT fn_record_staff_login_attempt(?, FALSE, '127.0.0.1', 'JUnit')",
                         Boolean.class,
                         email
@@ -1088,14 +1121,15 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     @DisplayName("Invalid Login-Success: Locked account cannot gain access through a success call while lockout is active")
     void shouldRejectLoginSuccessForLockedUser() {
         JdbcTemplate adminJdbc = createAdminJdbcTemplate();
+        JdbcTemplate authJdbc = createAuthJdbcTemplate();
         UUID userId = null;
         try {
             String email = "locked_login_" + UUID.randomUUID() + "@homestay.com";
             userId = createAdminTestUser(adminJdbc, email);
 
-            // Trigger 5 failed attempts to lock account
+            // Trigger 5 failed attempts to lock account via pms_auth
             for (int i = 1; i <= 5; i++) {
-                jdbcTemplate.queryForObject(
+                authJdbc.queryForObject(
                         "SELECT fn_record_staff_login_attempt(?, FALSE, '127.0.0.1', 'JUnit')",
                         Boolean.class,
                         email
@@ -1133,6 +1167,7 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     @DisplayName("Concurrency: Concurrent failed login attempts on the same staff account are serialized safely with row locks (FOR UPDATE)")
     void shouldHandleConcurrentFailedLoginAttemptsSafely() throws InterruptedException {
         JdbcTemplate adminJdbc = createAdminJdbcTemplate();
+        JdbcTemplate authJdbc = createAuthJdbcTemplate();
         UUID userId = null;
         try {
             String email = "concurrent_login_" + UUID.randomUUID() + "@homestay.com";
@@ -1150,7 +1185,7 @@ class StaffAuthDatabaseFoundationIntegrationTest {
                     readyLatch.countDown();
                     try {
                         startLatch.await();
-                        Boolean res = jdbcTemplate.queryForObject(
+                        Boolean res = authJdbc.queryForObject(
                                 "SELECT fn_record_staff_login_attempt(?, FALSE, '10.0.0.1', 'ConcurrentTester')",
                                 Boolean.class,
                                 email
@@ -1252,17 +1287,20 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     // =========================================================================
 
     @Test
-    @Transactional
     @DisplayName("Security audit log enforces append-only: denied at grant level for pms_app, and blocked by trigger for pms_admin")
     void shouldEnforceSecurityAuditAppendOnly() {
         UUID eventId = UUID.randomUUID();
-        jdbcTemplate.update(
+
+        // 1. Runtime role pms_app is denied INSERT, UPDATE, and DELETE at grant level
+        assertThatThrownBy(() -> jdbcTemplate.update(
                 "INSERT INTO staff_security_audit_events (id, event_type, email, actor_id, details) " +
                 "VALUES (?, 'LOGIN_FAILED', 'attacker@example.com', 'anonymous', '{\"reason\": \"bad_credentials\"}'::jsonb)",
                 eventId
-        );
+        ))
+                .isInstanceOf(DataAccessException.class)
+                .rootCause()
+                .hasMessageContaining("permission denied for table staff_security_audit_events");
 
-        // 1. Runtime role pms_app is denied UPDATE and DELETE at grant level
         assertThatThrownBy(() -> jdbcTemplate.update(
                 "UPDATE staff_security_audit_events SET email = 'tampered@example.com' WHERE id = ?",
                 eventId
@@ -1515,6 +1553,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
         assertThat(canInsertTokens).isFalse();
         assertThat(canUpdateTokens).isFalse();
         assertThat(canDeleteTokens).isFalse();
-        assertThat(canRecordLogin).isTrue();
+        assertThat(canRecordLogin).isFalse();
     }
 }

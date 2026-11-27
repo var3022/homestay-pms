@@ -19,6 +19,9 @@ public interface RoomRepository extends JpaRepository<Room, UUID> {
     @Query("SELECT r FROM Room r WHERE r.id = :id")
     Optional<Room> findByIdForUpdate(@Param("id") UUID id);
 
+    @Query("SELECT r.roomTypeId FROM Room r WHERE r.id = :id")
+    Optional<UUID> findRoomTypeIdById(@Param("id") UUID id);
+
     Optional<Room> findByPropertyIdAndRoomNumber(
             UUID propertyId,
             String roomNumber
