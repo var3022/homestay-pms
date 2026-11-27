@@ -118,6 +118,19 @@ export async function proxyToBackend(
   forwardHeaders.set("Authorization", `Bearer ${session.accessToken}`);
   forwardHeaders.set("Accept", "application/json");
 
+  // Validate and forward Idempotency-Key if provided
+  const rawIdempotencyKey = request.headers.get("Idempotency-Key");
+  if (rawIdempotencyKey !== null) {
+    const trimmedKey = rawIdempotencyKey.trim();
+    if (!trimmedKey || trimmedKey.length > 128 || /[\r\n\t\x00-\x1f\x7f]/.test(trimmedKey)) {
+      return NextResponse.json(
+        { error: "Invalid Idempotency-Key header: must be non-empty and at most 128 characters." },
+        { status: 400, headers: { "Cache-Control": "no-store, private" } }
+      );
+    }
+    forwardHeaders.set("Idempotency-Key", trimmedKey);
+  }
+
   let requestBody: string | undefined = undefined;
   if (["POST", "PUT", "PATCH"].includes(method)) {
     const contentType = request.headers.get("content-type");
@@ -249,6 +262,20 @@ export async function proxyToBackend(
   const backendContentType = backendResponse.headers.get("content-type");
   if (backendContentType) {
     outgoingHeaders.set("Content-Type", backendContentType);
+  }
+
+  // Preserve safe idempotency headers from backend
+  const backendIdempotencyKey = backendResponse.headers.get("Idempotency-Key");
+  if (backendIdempotencyKey) {
+    outgoingHeaders.set("Idempotency-Key", backendIdempotencyKey);
+  }
+  const backendIdempotentReplayed = backendResponse.headers.get("Idempotent-Replayed");
+  if (backendIdempotentReplayed) {
+    outgoingHeaders.set("Idempotent-Replayed", backendIdempotentReplayed);
+  }
+  const backendRetryAfter = backendResponse.headers.get("Retry-After");
+  if (backendRetryAfter) {
+    outgoingHeaders.set("Retry-After", backendRetryAfter);
   }
 
   // Enforce Cache-Control: no-store on all authenticated responses

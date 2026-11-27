@@ -7,9 +7,16 @@ import { StaffHeader } from "../StaffHeader";
 import {
   ApiRequestError,
   isUncertainError,
+  isIdempotencyInProgress,
+  isIdempotencyExpired,
+  isIdempotencyPayloadMismatch,
   matchesExactAssignment,
   type UncertainAssignmentAttempt,
 } from "@/lib/mutation-error";
+import {
+  computeGuestFingerprint,
+  computeReservationFingerprint,
+} from "@/lib/idempotency-fingerprint";
 import {
   evaluateReservationAssignmentCompleteness,
   getActiveReservedQuantity,
@@ -235,10 +242,17 @@ async function readResponse(response: Response): Promise<unknown> {
         code = obj.code;
       } else if (typeof nested?.code === "string" && nested.code.trim()) {
         code = nested.code;
+      } else if (response.status === 422 && (message.includes("different request payload") || message.includes("payload mismatch"))) {
+        code = "IDEMPOTENCY_PAYLOAD_MISMATCH";
+      } else if (response.status === 409 && message.includes("expired")) {
+        code = "IDEMPOTENCY_KEY_EXPIRED";
+      } else if (response.status === 409 && (response.headers.get("Retry-After") != null || message.includes("in progress"))) {
+        code = "IDEMPOTENCY_IN_PROGRESS";
       }
     }
 
-    throw new ApiRequestError(message, response.status, code);
+    const retryAfter = response.headers.get("Retry-After");
+    throw new ApiRequestError(message, response.status, code, retryAfter);
   }
 
   return data;
@@ -423,11 +437,142 @@ export default function ReservationsPage() {
   const [guestCreateUncertain, setGuestCreateUncertain] = useState(false);
   const [reservationCreateUncertain, setReservationCreateUncertain] =
     useState(false);
+  const [creationExpired, setCreationExpired] = useState(false);
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const [reconcilingCreate, setReconcilingCreate] = useState(false);
   const [primaryGuestId, setPrimaryGuestId] = useState("");
   const [newGuestName, setNewGuestName] = useState("");
   const [newGuestPhone, setNewGuestPhone] = useState("");
   const [newGuestEmail, setNewGuestEmail] = useState("");
+
+  const guestIdempotencyKeyRef = useRef<string>(
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : "00000000-0000-4000-8000-000000000001"
+  );
+  const reservationIdempotencyKeyRef = useRef<string>(
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : "00000000-0000-4000-8000-000000000002"
+  );
+  const confirmedCreatedGuestIdRef = useRef<string | null>(null);
+  const lastAttemptHashesRef = useRef<{ guest: string; reservation: string }>({
+    guest: "",
+    reservation: "",
+  });
+
+  const saveRecoveryMetadata = useCallback(
+    (
+      updates: Partial<{
+        guestState: "idle" | "pending" | "confirmed" | "uncertain" | "expired";
+        reservationState: "idle" | "pending" | "confirmed" | "uncertain" | "expired";
+        confirmedGuestId: string | null;
+        guestPayloadHash: string;
+        reservationPayloadHash: string;
+      }>
+    ) => {
+      try {
+        if (typeof window === "undefined" || !window.sessionStorage) return;
+        const existingRaw = window.sessionStorage.getItem("pms_creation_recovery");
+        const existing = existingRaw ? JSON.parse(existingRaw) : {};
+        const payload = {
+          version: 1,
+          timestamp: Date.now(),
+          guestKey: guestIdempotencyKeyRef.current,
+          reservationKey: reservationIdempotencyKeyRef.current,
+          confirmedGuestId:
+            updates.confirmedGuestId !== undefined
+              ? updates.confirmedGuestId
+              : (existing.confirmedGuestId ?? confirmedCreatedGuestIdRef.current),
+          guestState: updates.guestState ?? existing.guestState ?? "idle",
+          reservationState: updates.reservationState ?? existing.reservationState ?? "idle",
+          guestPayloadHash:
+            updates.guestPayloadHash ??
+            existing.guestPayloadHash ??
+            lastAttemptHashesRef.current.guest,
+          reservationPayloadHash:
+            updates.reservationPayloadHash ??
+            existing.reservationPayloadHash ??
+            lastAttemptHashesRef.current.reservation,
+        };
+        window.sessionStorage.setItem("pms_creation_recovery", JSON.stringify(payload));
+      } catch {
+        // safe fallback
+      }
+    },
+    []
+  );
+
+  const clearRecoveryMetadata = useCallback(() => {
+    try {
+      if (typeof window !== "undefined" && window.sessionStorage) {
+        window.sessionStorage.removeItem("pms_creation_recovery");
+      }
+    } catch {
+      // safe fallback
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        if (typeof window === "undefined" || !window.sessionStorage) return;
+        const raw = window.sessionStorage.getItem("pms_creation_recovery");
+        if (!raw) return;
+        const data = JSON.parse(raw);
+        if (!data || data.version !== 1) return;
+        // Do NOT silently delete state older than 24h: enter fail-closed staff verification state
+        if (Date.now() - data.timestamp > 24 * 60 * 60 * 1000 || data.guestState === "expired" || data.reservationState === "expired") {
+          setCreationExpired(true);
+          setShowCreateForm(true);
+          setFormError(
+            "An unresolved creation attempt from more than 24 hours ago was found. The server idempotency ledger expires keys after 24 hours and can no longer guarantee deduplication. The booking or guest may have already committed on the server. Please verify existing records before initiating a fresh creation attempt."
+          );
+          if (data.confirmedGuestId) {
+            confirmedCreatedGuestIdRef.current = data.confirmedGuestId;
+            setPrimaryGuestId(data.confirmedGuestId);
+            setGuestMode("existing");
+          }
+          return;
+        }
+        if (data.guestKey) {
+          guestIdempotencyKeyRef.current = data.guestKey;
+        }
+        if (data.reservationKey) {
+          reservationIdempotencyKeyRef.current = data.reservationKey;
+        }
+        if (data.confirmedGuestId) {
+          confirmedCreatedGuestIdRef.current = data.confirmedGuestId;
+          setPrimaryGuestId(data.confirmedGuestId);
+          setGuestMode("existing");
+        }
+        if (data.guestPayloadHash || data.reservationPayloadHash) {
+          lastAttemptHashesRef.current = {
+            guest: data.guestPayloadHash || "",
+            reservation: data.reservationPayloadHash || "",
+          };
+        }
+        if (data.guestState === "uncertain") {
+          setGuestCreateUncertain(true);
+          setShowCreateForm(true);
+          setFormError(
+            "A previous guest creation attempt was interrupted. Refresh the guest list or retry with the saved attempt key."
+          );
+        }
+        if (data.reservationState === "uncertain") {
+          setReservationCreateUncertain(true);
+          setShowCreateForm(true);
+          setFormError(
+            "A previous reservation creation attempt was interrupted. Refresh reservations or retry with the saved attempt key."
+          );
+        }
+      } catch {
+        // safe fallback
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const [bookingSourceId, setBookingSourceId] = useState("");
   const [externalBookingId, setExternalBookingId] = useState("");
@@ -629,6 +774,17 @@ export default function ReservationsPage() {
     setSpecialRequests("");
     setRoomRequests([{ roomTypeId: "", quantity: 1, unitPrice: "" }]);
     setFormError("");
+    setGuestCreateUncertain(false);
+    setReservationCreateUncertain(false);
+    setCreationExpired(false);
+    setShowDiscardConfirm(false);
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      guestIdempotencyKeyRef.current = crypto.randomUUID();
+      reservationIdempotencyKeyRef.current = crypto.randomUUID();
+    }
+    confirmedCreatedGuestIdRef.current = null;
+    lastAttemptHashesRef.current = { guest: "", reservation: "" };
+    clearRecoveryMetadata();
   }
 
   async function handleCreateReservation(
@@ -636,18 +792,7 @@ export default function ReservationsPage() {
   ) {
     event.preventDefault();
     if (saving || creatingReservationRef.current) return;
-    if (guestMode === "new" && guestCreateUncertain) {
-      setFormError(
-        "Guest creation outcome is uncertain. Refresh the guest list to check whether the guest was already created before retrying.",
-      );
-      return;
-    }
-    if (reservationCreateUncertain) {
-      setFormError(
-        "Reservation creation outcome is uncertain. Refresh reservations to verify whether the booking was already created before retrying.",
-      );
-      return;
-    }
+
     setFormError("");
     setSuccessMessage("");
 
@@ -661,12 +806,12 @@ export default function ReservationsPage() {
       return;
     }
 
-    if (guestMode === "existing" && !primaryGuestId) {
+    if (guestMode === "existing" && !primaryGuestId && !confirmedCreatedGuestIdRef.current) {
       setFormError("Please select a guest.");
       return;
     }
 
-    if (guestMode === "new" && !newGuestName.trim()) {
+    if (guestMode === "new" && !confirmedCreatedGuestIdRef.current && !newGuestName.trim()) {
       setFormError("Please enter the guest's name.");
       return;
     }
@@ -701,6 +846,54 @@ export default function ReservationsPage() {
       return;
     }
 
+    // Canonical business payload fingerprints (SHA-256) for idempotency safety
+    const currentGuestHash = await computeGuestFingerprint({
+      name: newGuestName,
+      phone: newGuestPhone,
+      email: newGuestEmail,
+    });
+
+    const currentReservationHash = await computeReservationFingerprint({
+      primaryGuestId: primaryGuestId || confirmedCreatedGuestIdRef.current,
+      checkInDate,
+      checkOutDate,
+      adults: Number(adults),
+      children: Number(children),
+      infants: Number(infants),
+      bookingSourceId,
+      externalBookingId,
+      specialRequests,
+      rooms: roomRequests.map((r) => ({
+        roomTypeId: r.roomTypeId,
+        quantity: Number(r.quantity),
+        unitPrice: r.unitPrice,
+      })),
+    });
+
+    // If uncertain, verify payload has not been modified
+    if (guestMode === "new" && guestCreateUncertain && !confirmedCreatedGuestIdRef.current) {
+      if (lastAttemptHashesRef.current.guest && lastAttemptHashesRef.current.guest !== currentGuestHash) {
+        setFormError(
+          "Guest details have been modified since the previous paused attempt. Retrying with the previous attempt key would result in a payload mismatch. Click 'Discard paused attempt & start over' to submit new guest details.",
+        );
+        return;
+      }
+    }
+
+    if (reservationCreateUncertain) {
+      if (lastAttemptHashesRef.current.reservation && lastAttemptHashesRef.current.reservation !== currentReservationHash) {
+        setFormError(
+          "Reservation details have been modified since the previous paused attempt. Retrying with the previous attempt key would result in a payload mismatch. Click 'Discard paused attempt & start over' to submit new reservation details.",
+        );
+        return;
+      }
+    }
+
+    lastAttemptHashesRef.current = {
+      guest: currentGuestHash,
+      reservation: currentReservationHash,
+    };
+
     creatingReservationRef.current = true;
     setSaving(true);
     let createdNewGuest: Guest | null = null;
@@ -708,7 +901,7 @@ export default function ReservationsPage() {
     try {
       let guestId = primaryGuestId;
 
-      if (guestMode === "new") {
+      if (guestMode === "new" && !confirmedCreatedGuestIdRef.current) {
         const guestPayload: Record<string, string> = {
           name: newGuestName.trim(),
         };
@@ -716,9 +909,21 @@ export default function ReservationsPage() {
         if (newGuestPhone.trim()) guestPayload.phone = newGuestPhone.trim();
         if (newGuestEmail.trim()) guestPayload.email = newGuestEmail.trim();
 
+        saveRecoveryMetadata({
+          guestState: "pending",
+          reservationState: "idle",
+          guestPayloadHash: currentGuestHash,
+          reservationPayloadHash: currentReservationHash,
+        });
+
+        const guestHeaders: Record<string, string> = {
+          "Content-Type": "application/json",
+          "Idempotency-Key": guestIdempotencyKeyRef.current,
+        };
+
         const guestResponse = await fetch("/api/guests", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: guestHeaders,
           body: JSON.stringify(guestPayload),
         });
 
@@ -733,6 +938,7 @@ export default function ReservationsPage() {
         }
 
         createdNewGuest = createdGuest;
+        confirmedCreatedGuestIdRef.current = createdGuest.id;
         guestId = createdGuest.id;
         setGuests((current) => [
           ...current.filter((guest) => guest.id !== createdGuest.id),
@@ -740,7 +946,35 @@ export default function ReservationsPage() {
         ]);
         setPrimaryGuestId(createdGuest.id);
         setGuestMode("existing");
+        setGuestCreateUncertain(false);
+
+        saveRecoveryMetadata({
+          guestState: "confirmed",
+          confirmedGuestId: createdGuest.id,
+        });
+      } else if (confirmedCreatedGuestIdRef.current) {
+        guestId = confirmedCreatedGuestIdRef.current;
       }
+
+      // Recompute canonical reservation fingerprint with the resolved guestId
+      const effectiveReservationHash = await computeReservationFingerprint({
+        primaryGuestId: guestId,
+        checkInDate,
+        checkOutDate,
+        adults: Number(adults),
+        children: Number(children),
+        infants: Number(infants),
+        bookingSourceId,
+        externalBookingId,
+        specialRequests,
+        rooms: roomRequests.map((r) => ({
+          roomTypeId: r.roomTypeId,
+          quantity: Number(r.quantity),
+          unitPrice: r.unitPrice,
+        })),
+      });
+
+      lastAttemptHashesRef.current.reservation = effectiveReservationHash;
 
       const reservationPayload = {
         primaryGuestId: guestId,
@@ -759,16 +993,33 @@ export default function ReservationsPage() {
         })),
       };
 
+      saveRecoveryMetadata({
+        reservationState: "pending",
+        confirmedGuestId: guestId,
+        reservationPayloadHash: effectiveReservationHash,
+      });
+
+      const reservationHeaders: Record<string, string> = {
+        "Content-Type": "application/json",
+        "Idempotency-Key": reservationIdempotencyKeyRef.current,
+      };
+
       const reservationResponse = await fetch("/api/reservations", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: reservationHeaders,
         body: JSON.stringify(reservationPayload),
       });
 
+      const isReservationReplayed =
+        reservationResponse.headers.get("Idempotent-Replayed") === "true";
+
       await readResponse(reservationResponse);
 
+      clearRecoveryMetadata();
       setSuccessMessage(
-        "Reservation created successfully. Its initial status is PENDING.",
+        isReservationReplayed
+          ? "Reservation was verified and replayed idempotently (HTTP 200). Initial status is PENDING."
+          : "Reservation created successfully. Its initial status is PENDING.",
       );
       setGuestCreateUncertain(false);
       setReservationCreateUncertain(false);
@@ -781,25 +1032,68 @@ export default function ReservationsPage() {
         err instanceof Error
           ? err.message
           : "Could not create the reservation.";
-      if (createdNewGuest) {
-        if (isUncertainError(err)) {
+      if (createdNewGuest || confirmedCreatedGuestIdRef.current) {
+        if (isIdempotencyExpired(err)) {
+          setCreationExpired(true);
+          saveRecoveryMetadata({ reservationState: "expired" });
+          setFormError(
+            "The reservation idempotency key has expired on the server (24-hour limit). The booking may have already committed on the backend before the response was received. Please verify the reservations list before attempting a new booking.",
+          );
+        } else if (isUncertainError(err) || isIdempotencyInProgress(err)) {
           setReservationCreateUncertain(true);
+          saveRecoveryMetadata({ reservationState: "uncertain" });
+          setFormError(
+            `Guest was registered, but the reservation outcome is uncertain: ${message} Please refresh reservations or retry with the saved attempt key.`,
+          );
+        } else if (isIdempotencyPayloadMismatch(err)) {
+          setFormError(
+            "The reservation details have changed for this attempt key. Please refresh reservations or reset the form to start a new reservation.",
+          );
+        } else {
+          setFormError(
+            `Guest was registered, but reservation creation failed: ${message}`,
+          );
         }
-        setFormError(
-          `Guest "${createdNewGuest.name}" was created and selected, but the reservation could not be confirmed: ${message}`,
-        );
-      } else if (guestMode === "new" && isUncertainError(err)) {
-        setGuestCreateUncertain(true);
-        setFormError(
-          `${message} Refresh the guest list before retrying to avoid creating a duplicate guest.`,
-        );
-      } else if (isUncertainError(err)) {
-        setReservationCreateUncertain(true);
-        setFormError(
-          `${message} Refresh reservations before retrying to avoid creating a duplicate booking.`,
-        );
+      } else if (guestMode === "new") {
+        if (isIdempotencyExpired(err)) {
+          setCreationExpired(true);
+          saveRecoveryMetadata({ guestState: "expired" });
+          setFormError(
+            "The guest idempotency key has expired on the server (24-hour limit). The guest record may have already committed on the backend. Please verify the guest list before attempting to create the guest again.",
+          );
+        } else if (isUncertainError(err) || isIdempotencyInProgress(err)) {
+          setGuestCreateUncertain(true);
+          saveRecoveryMetadata({ guestState: "uncertain" });
+          setFormError(
+            `Guest creation outcome is uncertain: ${message} Please refresh the guest list or retry with the saved attempt key to avoid creating duplicate guests.`,
+          );
+        } else if (isIdempotencyPayloadMismatch(err)) {
+          setFormError(
+            "The guest details have changed for this attempt key. Please refresh the guest list or reset the form.",
+          );
+        } else {
+          setFormError(message);
+        }
       } else {
-        setFormError(message);
+        if (isIdempotencyExpired(err)) {
+          setCreationExpired(true);
+          saveRecoveryMetadata({ reservationState: "expired" });
+          setFormError(
+            "The reservation idempotency key has expired on the server (24-hour limit). The booking may have already committed on the backend before the response was received. Please verify the reservations list before attempting a new booking.",
+          );
+        } else if (isUncertainError(err) || isIdempotencyInProgress(err)) {
+          setReservationCreateUncertain(true);
+          saveRecoveryMetadata({ reservationState: "uncertain" });
+          setFormError(
+            `Reservation creation outcome is uncertain: ${message} Refresh reservations or retry with the saved attempt key to verify before submitting a new reservation.`,
+          );
+        } else if (isIdempotencyPayloadMismatch(err)) {
+          setFormError(
+            "The reservation details have changed for this attempt key. Please refresh reservations or reset the form.",
+          );
+        } else {
+          setFormError(message);
+        }
       }
     } finally {
       creatingReservationRef.current = false;
@@ -1603,40 +1897,142 @@ export default function ReservationsPage() {
                 </label>
               </section>
 
+              {creationExpired && (
+                <div
+                  role="alert"
+                  className="rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900 space-y-3"
+                >
+                  <p className="font-medium">
+                    The idempotency attempt key expired on the server (24-hour ledger retention limit).
+                    The original guest or reservation may have already committed on the backend before the network response was received.
+                  </p>
+                  <p className="text-xs text-red-800">
+                    Do not infer a booking is absent merely because it is not on the first page of results. Please search or filter by guest name and dates before submitting a fresh booking to avoid creating duplicate reservations.
+                  </p>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={reconcilingCreate}
+                      onClick={async () => {
+                        setReconcilingCreate(true);
+                        try {
+                          await Promise.all([loadReservations(), loadFormOptions()]);
+                        } finally {
+                          setReconcilingCreate(false);
+                        }
+                      }}
+                      className="rounded-full border border-red-300 bg-white px-4 py-1.5 text-xs font-semibold text-red-900 hover:bg-red-100 disabled:opacity-50"
+                    >
+                      {reconcilingCreate ? "Refreshing…" : "↻ Refresh guest list & reservations"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCreationExpired(false);
+                        setFormError("");
+                        resetReservationForm();
+                      }}
+                      className="rounded-full border border-red-500 bg-red-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-red-700"
+                    >
+                      I have verified records & confirm no duplicate — Start fresh attempt
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {((guestMode === "new" && guestCreateUncertain) ||
                 reservationCreateUncertain) && (
                 <div
                   role="alert"
-                  className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 space-y-2"
+                  className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 space-y-3"
                 >
                   <p className="font-medium">
-                    Submission paused due to an uncertain network outcome. Refresh
-                    to reconcile server state before retrying, or switch to
-                    Existing guest if the guest already appears.
+                    Submission paused due to an uncertain network outcome. The operation may have committed on the server.
+                    Refresh to reconcile server state before retrying, or retry with the saved attempt key.
                   </p>
-                  <button
-                    type="button"
-                    disabled={reconcilingCreate}
-                    onClick={async () => {
-                      setReconcilingCreate(true);
-                      try {
-                        const [resOk, optsOk] = await Promise.all([
-                          loadReservations(),
-                          loadFormOptions(),
-                        ]);
-                        if (optsOk) setGuestCreateUncertain(false);
-                        if (resOk) setReservationCreateUncertain(false);
-                        if (optsOk && resOk) setFormError("");
-                      } finally {
-                        setReconcilingCreate(false);
-                      }
-                    }}
-                    className="rounded-full border border-amber-400 bg-white px-4 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
-                  >
-                    {reconcilingCreate
-                      ? "Refreshing…"
-                      : "↻ Refresh guest list & reservations"}
-                  </button>
+                  <p className="text-xs text-amber-800">
+                    Note: A newly committed reservation might not appear on the first page if multiple bookings exist. Please filter or check by guest name before discarding.
+                  </p>
+
+                  {showDiscardConfirm ? (
+                    <div className="rounded-lg border border-amber-400 bg-amber-100 p-3 space-y-2 text-xs text-amber-950">
+                      <p className="font-semibold">
+                        ⚠️ Duplicate Creation Risk Warning:
+                      </p>
+                      <p>
+                        An uncertain request may have already committed on the backend. Discarding this paused attempt does NOT cancel any reservation on the server. If the booking was already created, starting a new reservation may create a duplicate.
+                      </p>
+                      <p>
+                        Authoritative reconciliation is strongly recommended first: check the reservations list or refresh state. If you cannot establish whether a previous reservation exists, verify with management before starting a new booking.
+                      </p>
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowDiscardConfirm(false)}
+                          className="rounded-full border border-neutral-400 bg-white px-3 py-1 text-xs font-semibold text-neutral-800 hover:bg-neutral-50"
+                        >
+                          Keep paused attempt & check records
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowDiscardConfirm(false);
+                            resetReservationForm();
+                          }}
+                          className="rounded-full bg-red-700 px-3 py-1 text-xs font-semibold text-white hover:bg-red-800"
+                        >
+                          I understand the risk — Confirm discard & reset
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={reconcilingCreate}
+                        onClick={async () => {
+                          setReconcilingCreate(true);
+                          try {
+                            const [resOk, optsOk] = await Promise.all([
+                              loadReservations(),
+                              loadFormOptions(),
+                            ]);
+                            if (optsOk) setGuestCreateUncertain(false);
+                            if (resOk) setReservationCreateUncertain(false);
+                            if (optsOk && resOk) setFormError("");
+                          } finally {
+                            setReconcilingCreate(false);
+                          }
+                        }}
+                        className="rounded-full border border-amber-400 bg-white px-4 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                      >
+                        {reconcilingCreate
+                          ? "Refreshing…"
+                          : "↻ Refresh guest list & reservations"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={saving || reconcilingCreate}
+                        onClick={(e) => {
+                          const form = (e.currentTarget as HTMLElement).closest("form");
+                          if (form) {
+                            form.requestSubmit();
+                          }
+                        }}
+                        className="rounded-full border border-amber-500 bg-amber-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+                      >
+                        {saving ? "Retrying…" : "Retry submission with saved attempt key"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={saving || reconcilingCreate}
+                        onClick={() => setShowDiscardConfirm(true)}
+                        className="rounded-full border border-neutral-300 bg-white px-4 py-1.5 text-xs font-semibold text-neutral-700 hover:bg-neutral-100 disabled:opacity-50"
+                      >
+                        Discard paused attempt & start over
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1653,7 +2049,6 @@ export default function ReservationsPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    resetReservationForm();
                     setShowCreateForm(false);
                   }}
                   disabled={saving}
@@ -1668,7 +2063,8 @@ export default function ReservationsPage() {
                     saving ||
                     roomTypes.length === 0 ||
                     (guestMode === "new" && guestCreateUncertain) ||
-                    reservationCreateUncertain
+                    reservationCreateUncertain ||
+                    creationExpired
                   }
                   className="rounded-full bg-[#294638] px-6 py-2.5 text-sm font-medium text-white hover:bg-[#20382c] disabled:opacity-50"
                 >

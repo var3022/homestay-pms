@@ -44,6 +44,13 @@ export function StaffHeader({ initialStaff }: StaffHeaderProps) {
     } catch {
       // Best-effort logout
     } finally {
+      if (typeof window !== "undefined") {
+        try {
+          window.sessionStorage.removeItem("pms_creation_recovery");
+        } catch {
+          // ignore storage error
+        }
+      }
       router.push("/login");
       router.refresh();
     }
