@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionCookieName, getSessionCookieOptions, parseCookies } from "./cookies";
 import { decryptSession, encryptSession, isSessionExpiringSoon } from "./session";
-import { getBackendBaseUrl, refreshBackend } from "./backend";
+import { BackendAuthError, RefreshCollisionError, getBackendBaseUrl, refreshBackend } from "./backend";
 import { verifyCsrf } from "./csrf";
 import type { StaffSessionData } from "./types";
 
@@ -84,8 +84,43 @@ export async function proxyToBackend(
     try {
       session = await refreshBackend(session);
       updatedSession = session;
-    } catch {
-      // Proactive refresh failed; proceed with existing token if still valid
+    } catch (refreshErr) {
+      if (refreshErr instanceof RefreshCollisionError) {
+        // Concurrency collision occurred during proactive refresh.
+        // If the access JWT has already expired, do NOT dispatch a mutating request using a known-expired token!
+        if (Date.now() >= session.accessTokenExpiresAt) {
+          return NextResponse.json(
+            {
+              error: "Session refresh collision occurred while access token is expired. Please retry.",
+              code: "REFRESH_CONCURRENCY_COLLISION",
+              collision: true,
+            },
+            {
+              status: 409,
+              headers: { "Cache-Control": "no-store, private" },
+            }
+          );
+        }
+        // Old JWT is still valid: continue using existing access token without claiming refresh succeeded
+      } else if (
+        refreshErr instanceof BackendAuthError &&
+        (refreshErr.status === 401 || refreshErr.status === 403)
+      ) {
+        // Terminal authentication failure: if access token is already expired, fail closed immediately
+        if (Date.now() >= session.accessTokenExpiresAt) {
+          const expiredResponse = NextResponse.json(
+            { error: "Session expired or revoked. Please log in again." },
+            { status: 401, headers: { "Cache-Control": "no-store, private" } }
+          );
+          expiredResponse.cookies.set(
+            sessionCookieName,
+            "",
+            getSessionCookieOptions(0)
+          );
+          return expiredResponse;
+        }
+      }
+      // Proactive refresh failed transiently; proceed with existing token if still valid
     }
   }
 
@@ -204,7 +239,36 @@ export async function proxyToBackend(
           body: requestBody,
           cache: "no-store",
         });
-      } catch {
+      } catch (refreshErr) {
+        if (refreshErr instanceof RefreshCollisionError) {
+          // A collision occurred during reactive GET refresh:
+          // Do NOT clear session cookie! Do NOT retry with old token!
+          return NextResponse.json(
+            {
+              error: "Session refresh collision occurred. Please retry your request.",
+              code: "REFRESH_CONCURRENCY_COLLISION",
+              collision: true,
+            },
+            {
+              status: 409,
+              headers: { "Cache-Control": "no-store, private" },
+            }
+          );
+        }
+
+        if (
+          refreshErr instanceof BackendAuthError &&
+          refreshErr.status >= 500 &&
+          refreshErr.status <= 504
+        ) {
+          // Transient refresh failure: do NOT delete session cookie!
+          return NextResponse.json(
+            { error: "Authentication service temporarily unavailable during refresh." },
+            { status: 502, headers: { "Cache-Control": "no-store, private" } }
+          );
+        }
+
+        // Terminal authentication failure: clear cookie and fail closed
         const expiredResponse = NextResponse.json(
           { error: "Session expired. Please log in again." },
           { status: 401, headers: { "Cache-Control": "no-store, private" } }
@@ -241,7 +305,37 @@ export async function proxyToBackend(
           );
         }
         return reauthResponse;
-      } catch {
+      } catch (refreshErr) {
+        if (refreshErr instanceof RefreshCollisionError) {
+          // Collision during mutating request reauth attempt:
+          // Do NOT clear session cookie! Do NOT replay mutation!
+          return NextResponse.json(
+            {
+              error:
+                "Session refresh collision occurred during mutation. Please verify state and resubmit.",
+              code: "REFRESH_CONCURRENCY_COLLISION",
+              collision: true,
+            },
+            {
+              status: 409,
+              headers: { "Cache-Control": "no-store, private" },
+            }
+          );
+        }
+
+        if (
+          refreshErr instanceof BackendAuthError &&
+          refreshErr.status >= 500 &&
+          refreshErr.status <= 504
+        ) {
+          // Transient refresh failure: do NOT delete session cookie!
+          return NextResponse.json(
+            { error: "Authentication service temporarily unavailable during refresh." },
+            { status: 502, headers: { "Cache-Control": "no-store, private" } }
+          );
+        }
+
+        // Terminal authentication failure: clear cookie
         const expiredResponse = NextResponse.json(
           { error: "Session expired. Please log in again." },
           { status: 401, headers: { "Cache-Control": "no-store, private" } }

@@ -27,6 +27,8 @@ import {
   refreshBackend,
   logoutBackend,
   BackendAuthError,
+  RefreshCollisionError,
+  isRefreshCollision,
   extractCookieFromHeaders,
 } from "../src/lib/auth/backend.ts";
 
@@ -195,6 +197,55 @@ describe("PMS Staff Authentication & Next.js API Bridge Test Suite", () => {
               staff: validStaff,
             })
           );
+        } else if (cookie.includes("pms-refresh-dev=collision-token-uuid-409")) {
+          res.writeHead(409, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              status: 409,
+              error: "Conflict",
+              code: "REFRESH_CONCURRENCY_COLLISION",
+              message: "Concurrent refresh token rotation collision: A concurrent refresh attempt rotated this session within the grace window",
+              path: "/api/v1/auth/refresh",
+            })
+          );
+        } else if (cookie.includes("pms-refresh-dev=generic-409-token")) {
+          res.writeHead(409, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              status: 409,
+              error: "Conflict",
+              message: "State conflict occurred",
+              path: "/api/v1/auth/refresh",
+            })
+          );
+        } else if (cookie.includes("pms-refresh-dev=transient-502-token")) {
+          res.writeHead(502, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ message: "Bad Gateway" }));
+        } else if (cookie.includes("pms-refresh-dev=transient-503-token")) {
+          res.writeHead(503, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ message: "Database temporarily unavailable" }));
+        } else if (cookie.includes("pms-refresh-dev=reactive-get-collision-token")) {
+          res.writeHead(409, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              status: 409,
+              error: "Conflict",
+              code: "REFRESH_CONCURRENCY_COLLISION",
+              message: "Concurrent refresh token rotation collision",
+              path: "/api/v1/auth/refresh",
+            })
+          );
+        } else if (cookie.includes("pms-refresh-dev=reactive-post-collision-token")) {
+          res.writeHead(409, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              status: 409,
+              error: "Conflict",
+              code: "REFRESH_CONCURRENCY_COLLISION",
+              message: "Concurrent refresh token rotation collision",
+              path: "/api/v1/auth/refresh",
+            })
+          );
         } else {
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ message: "Refresh token revoked or expired." }));
@@ -211,7 +262,7 @@ describe("PMS Staff Authentication & Next.js API Bridge Test Suite", () => {
         if (auth === "Bearer jwt-access-token-abc-123" || auth === "Bearer jwt-access-token-new-456") {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify([{ id: "room-1", roomNumber: "101", propertyId: url.searchParams.get("propertyId") }]));
-        } else if (auth === "Bearer jwt-expired-token") {
+        } else if (auth === "Bearer jwt-expired-token" || auth === "Bearer jwt-reactive-get-collision") {
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ message: "Access token expired" }));
         } else {
@@ -221,7 +272,7 @@ describe("PMS Staff Authentication & Next.js API Bridge Test Suite", () => {
       } else if (url.pathname === "/api/v1/reservations" && req.method === "POST") {
         backendMutationCallCount++;
         const auth = req.headers["authorization"];
-        if (auth === "Bearer jwt-expired-token") {
+        if (auth === "Bearer jwt-expired-token" || auth === "Bearer jwt-reactive-post-collision") {
           // Expired access token on mutation
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ message: "Access token expired during mutation" }));
@@ -1166,6 +1217,443 @@ describe("PMS Staff Authentication & Next.js API Bridge Test Suite", () => {
       assert.equal(text.includes("jwt-access-token-abc-123"), false);
       assert.equal(text.includes("valid-refresh-token-uuid-123"), false);
       assert.equal(text.includes(process.env.PMS_SESSION_SECRET), false);
+    });
+  });
+
+  // ==========================================
+  // 10. V14 Structured Refresh Collision & Session Cookie Safety
+  // ==========================================
+  describe("10. V14 Structured Refresh Collision & Session Cookie Safety", () => {
+    it("A. recognizes exact HTTP 409 REFRESH_CONCURRENCY_COLLISION as RefreshCollisionError", async () => {
+      const session = {
+        accessToken: "jwt-expired-token",
+        accessTokenExpiresAt: Date.now() - 1000,
+        refreshToken: "collision-token-uuid-409",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+
+      await assert.rejects(
+        async () => {
+          await refreshBackend(session);
+        },
+        (err) => {
+          assert.ok(err instanceof RefreshCollisionError);
+          assert.ok(isRefreshCollision(err));
+          assert.equal(err.status, 409);
+          assert.equal(err.code, "REFRESH_CONCURRENCY_COLLISION");
+          assert.ok(err.message.includes("grace window"));
+          return true;
+        }
+      );
+    });
+
+    it("B. does NOT classify generic HTTP 409 without machine code as a benign collision", async () => {
+      const session = {
+        accessToken: "jwt-expired-token",
+        accessTokenExpiresAt: Date.now() - 1000,
+        refreshToken: "generic-409-token",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+
+      await assert.rejects(
+        async () => {
+          await refreshBackend(session);
+        },
+        (err) => {
+          assert.equal(isRefreshCollision(err), false);
+          assert.ok(err instanceof BackendAuthError);
+          assert.equal(err.status, 409);
+          assert.notEqual(err.code, "REFRESH_CONCURRENCY_COLLISION");
+          return true;
+        }
+      );
+    });
+
+    it("C. explicit /api/auth/refresh returns 409 and does NOT clear session cookie on benign collision", async () => {
+      const session = {
+        accessToken: "jwt-expired-token",
+        accessTokenExpiresAt: Date.now() - 1000,
+        refreshToken: "collision-token-uuid-409",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+      const cookieVal = await encryptSession(session);
+
+      const req = new Request("http://localhost:3000/api/auth/refresh", {
+        method: "POST",
+        headers: {
+          origin: "http://localhost:3000",
+          cookie: `${DEV_COOKIE_NAME}=${cookieVal}`,
+        },
+      });
+
+      const res = await refreshRoute(req);
+      assert.equal(res.status, 409);
+      const data = await res.json();
+      assert.equal(data.code, "REFRESH_CONCURRENCY_COLLISION");
+      assert.equal(data.collision, true);
+
+      // CRITICAL: Must NOT contain Set-Cookie header deleting or replacing session
+      const setCookie = res.headers.get("set-cookie");
+      assert.equal(setCookie, null);
+    });
+
+    it("D. explicit /api/auth/refresh returns 401 and clears session cookie with Max-Age=0 on terminal 401", async () => {
+      const session = {
+        accessToken: "jwt-expired-token",
+        accessTokenExpiresAt: Date.now() - 1000,
+        refreshToken: "revoked-or-unknown-token-999",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+      const cookieVal = await encryptSession(session);
+
+      const req = new Request("http://localhost:3000/api/auth/refresh", {
+        method: "POST",
+        headers: {
+          origin: "http://localhost:3000",
+          cookie: `${DEV_COOKIE_NAME}=${cookieVal}`,
+        },
+      });
+
+      const res = await refreshRoute(req);
+      assert.equal(res.status, 401);
+      const setCookie = res.headers.get("set-cookie");
+      assert.ok(setCookie, "Must emit Set-Cookie header on terminal failure");
+      assert.ok(setCookie.includes("Max-Age=0"), "Must clear cookie with Max-Age=0");
+    });
+
+    it("E. explicit /api/auth/refresh returns 502/503 and preserves session cookie on transient backend error", async () => {
+      const session502 = {
+        accessToken: "jwt-expired-token",
+        accessTokenExpiresAt: Date.now() - 1000,
+        refreshToken: "transient-502-token",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+      const cookieVal502 = await encryptSession(session502);
+
+      const req502 = new Request("http://localhost:3000/api/auth/refresh", {
+        method: "POST",
+        headers: {
+          origin: "http://localhost:3000",
+          cookie: `${DEV_COOKIE_NAME}=${cookieVal502}`,
+        },
+      });
+
+      const res502 = await refreshRoute(req502);
+      assert.equal(res502.status, 502);
+      assert.equal(res502.headers.get("set-cookie"), null, "502 must NOT clear cookie");
+
+      const session503 = {
+        accessToken: "jwt-expired-token",
+        accessTokenExpiresAt: Date.now() - 1000,
+        refreshToken: "transient-503-token",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+      const cookieVal503 = await encryptSession(session503);
+
+      const req503 = new Request("http://localhost:3000/api/auth/refresh", {
+        method: "POST",
+        headers: {
+          origin: "http://localhost:3000",
+          cookie: `${DEV_COOKIE_NAME}=${cookieVal503}`,
+        },
+      });
+
+      const res503 = await refreshRoute(req503);
+      assert.equal(res503.status, 503);
+      assert.equal(res503.headers.get("set-cookie"), null, "503 must NOT clear cookie");
+    });
+
+    it("F. proactive refresh collision with still-valid access token allows request to proceed without clearing cookie", async () => {
+      // Access token expiring in 30 seconds (triggers proactive refresh), but still valid
+      const session = {
+        accessToken: "jwt-access-token-abc-123",
+        accessTokenExpiresAt: Date.now() + 30_000,
+        refreshToken: "collision-token-uuid-409",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+      const cookieVal = await encryptSession(session);
+
+      const req = new Request("http://localhost:3000/api/v1/rooms?propertyId=test-prop-uuid-999", {
+        method: "GET",
+        headers: {
+          cookie: `${DEV_COOKIE_NAME}=${cookieVal}`,
+        },
+      });
+
+      const res = await proxyToBackend(req, "/api/v1/rooms");
+      assert.equal(res.status, 200, "Request should proceed because old JWT is still valid");
+      // Cookie is preserved, not overwritten or deleted
+      const setCookie = res.headers.get("set-cookie");
+      assert.equal(setCookie, null, "Should not emit Set-Cookie when proactive refresh collided");
+    });
+
+    it("G. proactive refresh collision with expired access token halts request, returns 409, and does not delete cookie", async () => {
+      // Access token already expired in the past
+      const session = {
+        accessToken: "jwt-expired-token",
+        accessTokenExpiresAt: Date.now() - 5000,
+        refreshToken: "collision-token-uuid-409",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+      const cookieVal = await encryptSession(session);
+
+      const req = new Request("http://localhost:3000/api/v1/rooms?propertyId=test-prop-uuid-999", {
+        method: "GET",
+        headers: {
+          cookie: `${DEV_COOKIE_NAME}=${cookieVal}`,
+        },
+      });
+
+      const res = await proxyToBackend(req, "/api/v1/rooms");
+      assert.equal(res.status, 409, "Must return 409 when token expired and refresh collided");
+      const data = await res.json();
+      assert.equal(data.code, "REFRESH_CONCURRENCY_COLLISION");
+      assert.equal(data.collision, true);
+      assert.equal(res.headers.get("set-cookie"), null, "Must NOT delete cookie on benign collision");
+    });
+
+    it("H. reactive GET/HEAD refresh collision returns 409 without deleting cookie and does not retry old token", async () => {
+      const session = {
+        accessToken: "jwt-reactive-get-collision",
+        accessTokenExpiresAt: Date.now() + 600_000, // Not proactively expiring
+        refreshToken: "reactive-get-collision-token",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+      const cookieVal = await encryptSession(session);
+
+      const req = new Request("http://localhost:3000/api/v1/rooms?propertyId=test-prop-uuid-999", {
+        method: "GET",
+        headers: {
+          cookie: `${DEV_COOKIE_NAME}=${cookieVal}`,
+        },
+      });
+
+      const res = await proxyToBackend(req, "/api/v1/rooms");
+      assert.equal(res.status, 409);
+      const data = await res.json();
+      assert.equal(data.code, "REFRESH_CONCURRENCY_COLLISION");
+      assert.equal(data.collision, true);
+      assert.equal(res.headers.get("set-cookie"), null, "Must NOT delete cookie on reactive GET collision");
+    });
+
+    it("I. non-idempotent POST mutation on 401 with refresh collision is NEVER silently replayed and preserves cookie", async () => {
+      const initialMutationCount = backendMutationCallCount;
+
+      const session = {
+        accessToken: "jwt-reactive-post-collision",
+        accessTokenExpiresAt: Date.now() + 600_000,
+        refreshToken: "reactive-post-collision-token",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+      const cookieVal = await encryptSession(session);
+
+      const req = new Request("http://localhost:3000/api/v1/reservations", {
+        method: "POST",
+        headers: {
+          origin: "http://localhost:3000",
+          "Content-Type": "application/json",
+          cookie: `${DEV_COOKIE_NAME}=${cookieVal}`,
+        },
+        body: JSON.stringify({ guestName: "Bob", propertyId: "test-prop-uuid-999" }),
+      });
+
+      const res = await proxyToBackend(req, "/api/v1/reservations");
+      assert.equal(res.status, 409);
+      const data = await res.json();
+      assert.equal(data.code, "REFRESH_CONCURRENCY_COLLISION");
+      assert.equal(data.collision, true);
+
+      // Verify mutation was called exactly ONCE (the initial 401 call), NEVER replayed
+      assert.equal(backendMutationCallCount, initialMutationCount + 1);
+
+      // Verify cookie was NOT cleared
+      assert.equal(res.headers.get("set-cookie"), null);
+    });
+
+    it("J. winner (200) and loser (409) response delivery order: both interleavings preserve valid session without stale overwrite", async () => {
+      // Interleaving J1: Winner arrives before loser
+      const sessionWinner = {
+        accessToken: "jwt-expired-token",
+        accessTokenExpiresAt: Date.now() - 1000,
+        refreshToken: "session-1-token", // Returns 200 with new token
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+      const cookieValWinner = await encryptSession(sessionWinner);
+      const reqWinner = new Request("http://localhost:3000/api/auth/refresh", {
+        method: "POST",
+        headers: { origin: "http://localhost:3000", cookie: `${DEV_COOKIE_NAME}=${cookieValWinner}` },
+      });
+      const resWinner = await refreshRoute(reqWinner);
+      assert.equal(resWinner.status, 200);
+      const winnerSetCookie = resWinner.headers.get("set-cookie");
+      assert.ok(winnerSetCookie);
+      assert.ok(!winnerSetCookie.includes("Max-Age=0"));
+
+      // Loser arrives after winner:
+      const sessionLoser = {
+        accessToken: "jwt-expired-token",
+        accessTokenExpiresAt: Date.now() - 1000,
+        refreshToken: "collision-token-uuid-409",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+      const cookieValLoser = await encryptSession(sessionLoser);
+      const reqLoser = new Request("http://localhost:3000/api/auth/refresh", {
+        method: "POST",
+        headers: { origin: "http://localhost:3000", cookie: `${DEV_COOKIE_NAME}=${cookieValLoser}` },
+      });
+      const resLoser = await refreshRoute(reqLoser);
+      assert.equal(resLoser.status, 409);
+      assert.equal(resLoser.headers.get("set-cookie"), null, "Loser must NOT delete or overwrite session");
+
+      // Interleaving J2: Loser arrives before winner
+      const resLoserFirst = await refreshRoute(reqLoser);
+      assert.equal(resLoserFirst.status, 409);
+      assert.equal(resLoserFirst.headers.get("set-cookie"), null);
+
+      const resWinnerSecond = await refreshRoute(reqWinner);
+      assert.equal(resWinnerSecond.status, 200);
+      assert.ok(resWinnerSecond.headers.get("set-cookie"));
+    });
+
+    it("K. two independent Next.js process instances: winner sets session, loser preserves cookie without deletion", async () => {
+      // Simulating instance A (winner) and instance B (loser)
+      const sessionA = {
+        accessToken: "jwt-expired-token",
+        accessTokenExpiresAt: Date.now() - 1000,
+        refreshToken: "session-2-token",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+      const sessionB = {
+        accessToken: "jwt-expired-token",
+        accessTokenExpiresAt: Date.now() - 1000,
+        refreshToken: "collision-token-uuid-409",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+
+      const resA = await refreshRoute(
+        new Request("http://localhost:3000/api/auth/refresh", {
+          method: "POST",
+          headers: { origin: "http://localhost:3000", cookie: `${DEV_COOKIE_NAME}=${await encryptSession(sessionA)}` },
+        })
+      );
+      assert.equal(resA.status, 200);
+      assert.ok(resA.headers.get("set-cookie"));
+
+      const resB = await refreshRoute(
+        new Request("http://localhost:3000/api/auth/refresh", {
+          method: "POST",
+          headers: { origin: "http://localhost:3000", cookie: `${DEV_COOKIE_NAME}=${await encryptSession(sessionB)}` },
+        })
+      );
+      assert.equal(resB.status, 409);
+      assert.equal(resB.headers.get("set-cookie"), null, "Instance B must NOT delete valid cookie");
+    });
+
+    it("L. logout versus refresh: logout revokes session family, clears cookie, and prevents resurrection", async () => {
+      const session = {
+        accessToken: "jwt-access-token-abc-123",
+        accessTokenExpiresAt: Date.now() + 900000,
+        refreshToken: "logout-race-token-999",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+      const cookieVal = await encryptSession(session);
+
+      // Logout request
+      const logoutReq = new Request("http://localhost:3000/api/auth/logout", {
+        method: "POST",
+        headers: { origin: "http://localhost:3000", cookie: `${DEV_COOKIE_NAME}=${cookieVal}` },
+      });
+      const logoutRes = await logoutRoute(logoutReq);
+      assert.equal(logoutRes.status, 200);
+      assert.ok(logoutRes.headers.get("set-cookie").includes("Max-Age=0"));
+
+      // Refresh request after logout is rejected and cannot resurrect session
+      const refreshReq = new Request("http://localhost:3000/api/auth/refresh", {
+        method: "POST",
+        headers: { origin: "http://localhost:3000", cookie: `${DEV_COOKIE_NAME}=${cookieVal}` },
+      });
+      const refreshRes = await refreshRoute(refreshReq);
+      assert.equal(refreshRes.status, 401);
+      assert.ok(refreshRes.headers.get("set-cookie").includes("Max-Age=0"));
+    });
+
+    it("M. no automatic retry loops for rotated refresh tokens on collision", async () => {
+      const initialRefreshCalls = backendRefreshCallCount;
+      const session = {
+        accessToken: "jwt-expired-token",
+        accessTokenExpiresAt: Date.now() - 1000,
+        refreshToken: "collision-token-uuid-409",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+
+      try {
+        await refreshBackend(session);
+      } catch (err) {
+        assert.ok(isRefreshCollision(err));
+      }
+
+      // Must call backend EXACTLY once, never retry or loop
+      assert.equal(backendRefreshCallCount, initialRefreshCalls + 1);
+    });
+
+    it("N. no automatic replay of business mutations on 401 refresh collision", async () => {
+      const initialMutationCalls = backendMutationCallCount;
+      const session = {
+        accessToken: "jwt-reactive-post-collision",
+        accessTokenExpiresAt: Date.now() + 600_000,
+        refreshToken: "reactive-post-collision-token",
+        refreshTokenCookieName: "pms-refresh-dev",
+        staff: validStaff,
+        sessionVersion: 1,
+      };
+      const cookieVal = await encryptSession(session);
+
+      const req = new Request("http://localhost:3000/api/v1/reservations", {
+        method: "POST",
+        headers: {
+          origin: "http://localhost:3000",
+          "Content-Type": "application/json",
+          cookie: `${DEV_COOKIE_NAME}=${cookieVal}`,
+        },
+        body: JSON.stringify({ guestName: "Charlie", propertyId: "test-prop-uuid-999" }),
+      });
+
+      const res = await proxyToBackend(req, "/api/v1/reservations");
+      assert.equal(res.status, 409);
+      // Backend mutation call count increased by exactly 1 (the initial failing attempt)
+      assert.equal(backendMutationCallCount, initialMutationCalls + 1);
     });
   });
 });

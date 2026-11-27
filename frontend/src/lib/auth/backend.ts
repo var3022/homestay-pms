@@ -7,13 +7,28 @@ import type {
 export class BackendAuthError extends Error {
   status: number;
   data: unknown;
+  code?: string;
 
-  constructor(status: number, message: string, data?: unknown) {
+  constructor(status: number, message: string, data?: unknown, code?: string) {
     super(message);
     this.name = "BackendAuthError";
     this.status = status;
     this.data = data;
+    this.code = code;
   }
+}
+
+export class RefreshCollisionError extends BackendAuthError {
+  readonly code = "REFRESH_CONCURRENCY_COLLISION" as const;
+
+  constructor(message: string, data?: unknown) {
+    super(409, message, data, "REFRESH_CONCURRENCY_COLLISION");
+    this.name = "RefreshCollisionError";
+  }
+}
+
+export function isRefreshCollision(error: unknown): error is RefreshCollisionError {
+  return error instanceof RefreshCollisionError;
 }
 
 export function getBackendBaseUrl(): string {
@@ -211,11 +226,46 @@ async function executeBackendRefresh(
   }
 
   if (!response.ok) {
+    let errorData: unknown = null;
     let message = "Failed to refresh session.";
+    try {
+      errorData = await response.json();
+      if (
+        errorData &&
+        typeof errorData === "object" &&
+        "message" in errorData &&
+        typeof (errorData as { message: unknown }).message === "string"
+      ) {
+        message = (errorData as { message: string }).message;
+      }
+    } catch {
+      // Non-JSON response
+    }
+
+    if (response.status === 409) {
+      if (
+        errorData &&
+        typeof errorData === "object" &&
+        "code" in errorData &&
+        (errorData as { code: unknown }).code === "REFRESH_CONCURRENCY_COLLISION"
+      ) {
+        throw new RefreshCollisionError(
+          message || "A concurrent refresh attempt rotated this session within the grace window.",
+          errorData
+        );
+      }
+      throw new BackendAuthError(
+        409,
+        message || "Conflict occurred during session refresh.",
+        errorData
+      );
+    }
+
     if (response.status === 401 || response.status === 403) {
       message = "Session expired or revoked. Please log in again.";
     }
-    throw new BackendAuthError(response.status, message);
+
+    throw new BackendAuthError(response.status, message, errorData);
   }
 
   const data = (await response.json()) as BackendRefreshResponse;

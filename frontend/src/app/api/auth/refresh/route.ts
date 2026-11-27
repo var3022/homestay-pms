@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { BackendAuthError, refreshBackend } from "@/lib/auth/backend";
+import { BackendAuthError, RefreshCollisionError, refreshBackend } from "@/lib/auth/backend";
 import { getSessionCookieName, getSessionCookieOptions, parseCookies } from "@/lib/auth/cookies";
 import { decryptSession, encryptSession } from "@/lib/auth/session";
 import { verifyCsrf } from "@/lib/auth/csrf";
@@ -54,28 +54,71 @@ export async function POST(request: Request) {
 
     return response;
   } catch (err) {
-    const errorResponse = NextResponse.json(
+    if (err instanceof RefreshCollisionError) {
+      // Confirmed V14 concurrency collision:
+      // Return 409 Conflict with machine-readable code.
+      // CRITICAL: Do NOT emit Set-Cookie deletion! Do NOT emit replacement cookie!
+      return NextResponse.json(
+        {
+          error: err.message,
+          code: "REFRESH_CONCURRENCY_COLLISION",
+          collision: true,
+        },
+        {
+          status: 409,
+          headers: {
+            "Cache-Control": "no-store, no-cache, must-revalidate, private",
+            Pragma: "no-cache",
+          },
+        }
+      );
+    }
+
+    if (err instanceof BackendAuthError) {
+      // Transient server/transport errors (500, 502, 503, 504): preserve session cookie
+      if (err.status >= 500 && err.status <= 504) {
+        return NextResponse.json(
+          { error: err.message },
+          {
+            status: err.status,
+            headers: { "Cache-Control": "no-store, private" },
+          }
+        );
+      }
+
+      if (err.status === 429) {
+        return NextResponse.json(
+          { error: err.message },
+          {
+            status: 429,
+            headers: { "Cache-Control": "no-store, private" },
+          }
+        );
+      }
+
+      // Terminal authentication failure (401, 403, or other non-transient rejection):
+      const errorResponse = NextResponse.json(
+        { error: err.message },
+        {
+          status: 401,
+          headers: { "Cache-Control": "no-store, private" },
+        }
+      );
+      errorResponse.cookies.set(
+        getSessionCookieName(),
+        "",
+        getSessionCookieOptions(0)
+      );
+      return errorResponse;
+    }
+
+    // Unexpected internal programming error: do not clear session cookie
+    return NextResponse.json(
+      { error: "Internal server error during session refresh." },
       {
-        error:
-          err instanceof BackendAuthError
-            ? err.message
-            : "Session refresh failed.",
-      },
-      {
-        status:
-          err instanceof BackendAuthError && err.status === 429
-            ? 429
-            : 401,
+        status: 500,
         headers: { "Cache-Control": "no-store, private" },
       }
     );
-
-    // Clear stale cookie on fatal failure
-    errorResponse.cookies.set(
-      getSessionCookieName(),
-      "",
-      getSessionCookieOptions(0)
-    );
-    return errorResponse;
   }
 }
