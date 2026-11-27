@@ -1,5 +1,6 @@
 package com.homestay.pms_backend.service;
 
+import com.homestay.pms_backend.dto.IdempotentResult;
 import com.homestay.pms_backend.dto.request.GuestCreateRequest;
 import com.homestay.pms_backend.dto.request.GuestUpdateRequest;
 import com.homestay.pms_backend.dto.response.GuestResponse;
@@ -11,6 +12,8 @@ import java.util.UUID;
 public interface GuestService {
 
     GuestResponse createGuest(GuestCreateRequest request);
+
+    IdempotentResult<GuestResponse> createGuestIdempotent(GuestCreateRequest request, String idempotencyKey);
 
     GuestResponse getGuestById(UUID id);
 

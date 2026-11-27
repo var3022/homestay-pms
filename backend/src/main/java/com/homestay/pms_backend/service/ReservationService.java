@@ -1,5 +1,6 @@
 package com.homestay.pms_backend.service;
 
+import com.homestay.pms_backend.dto.IdempotentResult;
 import com.homestay.pms_backend.dto.request.ReservationCreateRequest;
 import com.homestay.pms_backend.dto.request.ReservationUpdateRequest;
 import com.homestay.pms_backend.dto.response.ReservationResponse;
@@ -12,6 +13,10 @@ public interface ReservationService {
 
     ReservationResponse createReservation(
             ReservationCreateRequest request);
+
+    IdempotentResult<ReservationResponse> createReservationIdempotent(
+            ReservationCreateRequest request,
+            String idempotencyKey);
 
     ReservationResponse getReservationById(UUID id);
 

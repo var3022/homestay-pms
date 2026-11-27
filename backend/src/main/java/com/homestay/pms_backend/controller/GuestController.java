@@ -1,5 +1,6 @@
 package com.homestay.pms_backend.controller;
 
+import com.homestay.pms_backend.dto.IdempotentResult;
 import com.homestay.pms_backend.dto.request.GuestCreateRequest;
 import com.homestay.pms_backend.dto.request.GuestUpdateRequest;
 import com.homestay.pms_backend.dto.response.GuestResponse;
@@ -8,6 +9,7 @@ import com.homestay.pms_backend.security.authorization.StaffOperation;
 import com.homestay.pms_backend.service.GuestService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -27,17 +29,43 @@ public class GuestController {
 
     @PostMapping
     public ResponseEntity<GuestResponse> createGuest(
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @Valid @RequestBody GuestCreateRequest request) {
 
         if (guestAuthorizationGuard.isEnforcementEnabled()) {
             guestAuthorizationGuard.validateGuestRegistration(request.getPropertyId());
         }
 
-        GuestResponse response = guestService.createGuest(request);
+        if (idempotencyKey == null) {
+            GuestResponse response = guestService.createGuest(request);
+            return ResponseEntity
+                    .status(HttpStatus.CREATED)
+                    .body(response);
+        }
+
+        IdempotentResult<GuestResponse> result = guestService.createGuestIdempotent(request, idempotencyKey);
+
+        HttpHeaders headers = new HttpHeaders();
+        if (result.idempotencyKey() != null) {
+            headers.set("Idempotency-Key", result.idempotencyKey());
+        }
+
+        if (result.replayed()) {
+            headers.set("Idempotent-Replayed", "true");
+            return ResponseEntity
+                    .ok()
+                    .headers(headers)
+                    .body(result.data());
+        }
 
         return ResponseEntity
                 .status(HttpStatus.CREATED)
-                .body(response);
+                .headers(headers)
+                .body(result.data());
+    }
+
+    public ResponseEntity<GuestResponse> createGuest(GuestCreateRequest request) {
+        return createGuest(null, request);
     }
 
     @GetMapping("/{id}")

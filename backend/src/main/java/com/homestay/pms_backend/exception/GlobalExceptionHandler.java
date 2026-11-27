@@ -181,6 +181,22 @@ public class GlobalExceptionHandler {
                         ));
             }
 
+            // PostgreSQL lock timeout (SQLSTATE 55P03)
+            if ("55P03".equals(sqlState)) {
+                log.warn("Database lock timeout (SQLSTATE 55P03): {}", msg);
+                return ResponseEntity
+                        .status(HttpStatus.CONFLICT)
+                        .header(HttpHeaders.RETRY_AFTER, "1")
+                        .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                        .header(HttpHeaders.PRAGMA, "no-cache")
+                        .body(new ErrorResponse(
+                                Instant.now(),
+                                HttpStatus.CONFLICT.value(),
+                                "Conflict",
+                                "Database lock acquisition timed out. Please retry."
+                        ));
+            }
+
             // PostgreSQL deadlock detected (SQLSTATE 40P01) — never classify as normal business conflict
             if ("40P01".equals(sqlState)) {
                 log.error("Database deadlock detected (SQLSTATE 40P01)", exception);
@@ -293,6 +309,67 @@ public class GlobalExceptionHandler {
 
         return ResponseEntity
                 .status(HttpStatus.BAD_REQUEST)
+                .body(response);
+    }
+
+    @ExceptionHandler(IdempotencyConflictException.class)
+    public ResponseEntity<ErrorResponse> handleIdempotencyConflict(
+            IdempotencyConflictException exception) {
+
+        log.warn("Idempotency payload conflict rejected: {}", exception.getMessage());
+
+        ErrorResponse response = new ErrorResponse(
+                Instant.now(),
+                HttpStatus.UNPROCESSABLE_ENTITY.value(),
+                "Unprocessable Entity",
+                exception.getMessage()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .header(HttpHeaders.PRAGMA, "no-cache")
+                .body(response);
+    }
+
+    @ExceptionHandler(IdempotencyExpiredException.class)
+    public ResponseEntity<ErrorResponse> handleIdempotencyExpired(
+            IdempotencyExpiredException exception) {
+
+        log.warn("Idempotency key expired: {}", exception.getMessage());
+
+        ErrorResponse response = new ErrorResponse(
+                Instant.now(),
+                HttpStatus.CONFLICT.value(),
+                "Conflict",
+                exception.getMessage()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .header(HttpHeaders.PRAGMA, "no-cache")
+                .body(response);
+    }
+
+    @ExceptionHandler(IdempotencyInProgressException.class)
+    public ResponseEntity<ErrorResponse> handleIdempotencyInProgress(
+            IdempotencyInProgressException exception) {
+
+        log.warn("Idempotency request in progress: {}", exception.getMessage());
+
+        ErrorResponse response = new ErrorResponse(
+                Instant.now(),
+                HttpStatus.CONFLICT.value(),
+                "Conflict",
+                exception.getMessage()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .header(HttpHeaders.RETRY_AFTER, "1")
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .header(HttpHeaders.PRAGMA, "no-cache")
                 .body(response);
     }
 

@@ -1,5 +1,6 @@
 package com.homestay.pms_backend.controller;
 
+import com.homestay.pms_backend.dto.IdempotentResult;
 import com.homestay.pms_backend.dto.request.ReservationCreateRequest;
 import com.homestay.pms_backend.dto.request.ReservationUpdateRequest;
 import com.homestay.pms_backend.dto.response.ReservationResponse;
@@ -8,6 +9,7 @@ import com.homestay.pms_backend.security.authorization.StaffOperation;
 import com.homestay.pms_backend.service.ReservationService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -27,16 +29,42 @@ public class ReservationController {
 
     @PostMapping
     public ResponseEntity<ReservationResponse> createReservation(
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @Valid @RequestBody ReservationCreateRequest request) {
 
         reservationAuthorizationGuard.validateReservationCreation(request.getPropertyId());
 
-        ReservationResponse response =
-                reservationService.createReservation(request);
+        if (idempotencyKey == null) {
+            ReservationResponse response = reservationService.createReservation(request);
+            return ResponseEntity
+                    .status(HttpStatus.CREATED)
+                    .body(response);
+        }
+
+        IdempotentResult<ReservationResponse> result =
+                reservationService.createReservationIdempotent(request, idempotencyKey);
+
+        HttpHeaders headers = new HttpHeaders();
+        if (result.idempotencyKey() != null) {
+            headers.set("Idempotency-Key", result.idempotencyKey());
+        }
+
+        if (result.replayed()) {
+            headers.set("Idempotent-Replayed", "true");
+            return ResponseEntity
+                    .ok()
+                    .headers(headers)
+                    .body(result.data());
+        }
 
         return ResponseEntity
                 .status(HttpStatus.CREATED)
-                .body(response);
+                .headers(headers)
+                .body(result.data());
+    }
+
+    public ResponseEntity<ReservationResponse> createReservation(ReservationCreateRequest request) {
+        return createReservation(null, request);
     }
 
     @GetMapping("/{id}")

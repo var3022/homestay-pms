@@ -100,4 +100,32 @@ class DatabaseUpgradeCompatibilityTest {
         );
         assertThat(pkCount).isEqualTo(1);
     }
+
+    @Test
+    @DisplayName("Verify that api_idempotency_keys exists, is owned by pms_admin, and has required constraints")
+    void shouldVerifyApiIdempotencyKeysExistsAndOwnedByPmsAdmin() {
+        String owner = jdbcTemplate.queryForObject(
+                "SELECT tableowner FROM pg_tables WHERE schemaname = 'public' AND tablename = 'api_idempotency_keys'",
+                String.class
+        );
+        assertThat(owner).isEqualTo("pms_admin");
+
+        Integer uqCount = jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM pg_constraint WHERE conrelid = 'api_idempotency_keys'::regclass AND conname = 'uq_idempotency_scope'",
+                Integer.class
+        );
+        assertThat(uqCount).isEqualTo(1);
+
+        Integer chkOpCount = jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM pg_constraint WHERE conrelid = 'api_idempotency_keys'::regclass AND conname = 'chk_idempotency_operation'",
+                Integer.class
+        );
+        assertThat(chkOpCount).isEqualTo(1);
+
+        Integer chkStateCount = jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM pg_constraint WHERE conrelid = 'api_idempotency_keys'::regclass AND conname = 'chk_idempotency_state'",
+                Integer.class
+        );
+        assertThat(chkStateCount).isEqualTo(1);
+    }
 }

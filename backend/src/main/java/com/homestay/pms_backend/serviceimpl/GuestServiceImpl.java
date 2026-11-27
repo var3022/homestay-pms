@@ -1,17 +1,23 @@
 package com.homestay.pms_backend.serviceimpl;
 
+import com.homestay.pms_backend.dto.IdempotentResult;
 import com.homestay.pms_backend.dto.request.GuestCreateRequest;
 import com.homestay.pms_backend.dto.request.GuestUpdateRequest;
 import com.homestay.pms_backend.dto.response.GuestResponse;
 import com.homestay.pms_backend.entity.Guest;
+import com.homestay.pms_backend.enums.IdempotencyOperation;
+import com.homestay.pms_backend.exception.BusinessValidationException;
 import com.homestay.pms_backend.exception.ResourceNotFoundException;
 import com.homestay.pms_backend.mapper.GuestMapper;
 import com.homestay.pms_backend.repository.GuestRepository;
 import com.homestay.pms_backend.repository.PropertyRepository;
 import com.homestay.pms_backend.security.authorization.GuestAuthorizationGuard;
 import com.homestay.pms_backend.security.authorization.StaffOperation;
+import com.homestay.pms_backend.service.ClaimOutcome;
 import com.homestay.pms_backend.service.GuestPropertyAssociationService;
 import com.homestay.pms_backend.service.GuestService;
+import com.homestay.pms_backend.service.IdempotencyFingerprintService;
+import com.homestay.pms_backend.service.IdempotencyService;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,9 +42,64 @@ public class GuestServiceImpl implements GuestService {
     private final PropertyRepository propertyRepository;
     private final GuestAuthorizationGuard authorizationGuard;
     private final GuestPropertyAssociationService associationService;
+    private final IdempotencyService idempotencyService;
+    private final IdempotencyFingerprintService fingerprintService;
 
     @Override
     public GuestResponse createGuest(GuestCreateRequest request) {
+        return createGuestIdempotent(request, null).data();
+    }
+
+    @Override
+    public IdempotentResult<GuestResponse> createGuestIdempotent(GuestCreateRequest request, String idempotencyKey) {
+        if (idempotencyKey == null) {
+            return new IdempotentResult<>(executeCreateGuest(request), false, null);
+        }
+
+        idempotencyService.validateKeyHeader(idempotencyKey);
+
+        if (request.getPropertyId() == null) {
+            throw new BusinessValidationException("Target propertyId is required when Idempotency-Key is provided.");
+        }
+
+        if (authorizationGuard.isEnforcementEnabled()) {
+            authorizationGuard.validateGuestRegistration(request.getPropertyId());
+            request.setIdDocumentImageKey(null);
+        } else {
+            if (!propertyRepository.existsById(request.getPropertyId())) {
+                throw new ResourceNotFoundException("Property not found with id: " + request.getPropertyId());
+            }
+        }
+
+        String fingerprint = fingerprintService.generateGuestFingerprint(request);
+        UUID principalId = idempotencyService.resolvePrincipalId();
+
+        ClaimOutcome outcome = idempotencyService.claimKey(
+                request.getPropertyId(),
+                IdempotencyOperation.CREATE_GUEST,
+                principalId,
+                idempotencyKey,
+                fingerprint
+        );
+
+        if (outcome instanceof ClaimOutcome.Replay replay) {
+            GuestResponse existing = getGuestById(replay.resourceId());
+            return new IdempotentResult<>(existing, true, idempotencyKey);
+        }
+
+        ClaimOutcome.Claimed claimed = (ClaimOutcome.Claimed) outcome;
+
+        Guest guest = guestMapper.toEntity(request);
+        Guest savedGuest = guestRepository.saveAndFlush(guest);
+        associationService.createRegistrationAssociation(savedGuest.getId(), request.getPropertyId());
+
+        idempotencyService.completeClaim(claimed.claimId(), savedGuest.getId(), 201);
+
+        GuestResponse response = guestMapper.toResponse(savedGuest);
+        return new IdempotentResult<>(response, false, idempotencyKey);
+    }
+
+    private GuestResponse executeCreateGuest(GuestCreateRequest request) {
         if (authorizationGuard.isEnforcementEnabled()) {
             authorizationGuard.validateGuestRegistration(request.getPropertyId());
             // Reject client-supplied document storage keys under enforcement

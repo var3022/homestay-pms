@@ -1,5 +1,6 @@
 package com.homestay.pms_backend.serviceimpl;
 
+import com.homestay.pms_backend.dto.IdempotentResult;
 import com.homestay.pms_backend.dto.request.ReservationCreateRequest;
 import com.homestay.pms_backend.dto.request.ReservationUpdateRequest;
 import com.homestay.pms_backend.dto.response.ReservationResponse;
@@ -7,6 +8,7 @@ import com.homestay.pms_backend.entity.Reservation;
 import com.homestay.pms_backend.entity.ReservationRoom;
 import com.homestay.pms_backend.entity.RoomAssignment;
 import com.homestay.pms_backend.enums.HousekeepingStatus;
+import com.homestay.pms_backend.enums.IdempotencyOperation;
 import com.homestay.pms_backend.enums.ReservationRoomStatus;
 import com.homestay.pms_backend.enums.ReservationStatus;
 import com.homestay.pms_backend.enums.RoomAssignmentStatus;
@@ -21,7 +23,10 @@ import com.homestay.pms_backend.repository.BookingSourceRepository;
 import com.homestay.pms_backend.repository.ReservationRepository;
 import com.homestay.pms_backend.repository.GuestRepository;
 import com.homestay.pms_backend.repository.PropertyRepository;
+import com.homestay.pms_backend.service.ClaimOutcome;
 import com.homestay.pms_backend.service.GuestPropertyAssociationService;
+import com.homestay.pms_backend.service.IdempotencyFingerprintService;
+import com.homestay.pms_backend.service.IdempotencyService;
 import com.homestay.pms_backend.service.ReservationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -80,7 +85,10 @@ public class ReservationServiceImpl implements ReservationService {
         private final Clock clock;
         private final StaffAuthorizationService staffAuthorizationService;
         private final SecurityEnforcementProperties securityEnforcementProperties;
+        private final IdempotencyService idempotencyService;
+        private final IdempotencyFingerprintService idempotencyFingerprintService;
 
+        @Autowired
         public ReservationServiceImpl(
                         ReservationRepository reservationRepository,
                         ReservationMapper reservationMapper,
@@ -96,7 +104,9 @@ public class ReservationServiceImpl implements ReservationService {
                         EntityManager entityManager,
                         @Autowired(required = false) Clock clock,
                         @Autowired(required = false) StaffAuthorizationService staffAuthorizationService,
-                        @Autowired(required = false) SecurityEnforcementProperties securityEnforcementProperties) {
+                        @Autowired(required = false) SecurityEnforcementProperties securityEnforcementProperties,
+                        @Autowired(required = false) IdempotencyService idempotencyService,
+                        @Autowired(required = false) IdempotencyFingerprintService idempotencyFingerprintService) {
                 this.reservationRepository = reservationRepository;
                 this.reservationMapper = reservationMapper;
                 this.propertyRepository = propertyRepository;
@@ -114,12 +124,119 @@ public class ReservationServiceImpl implements ReservationService {
                 this.securityEnforcementProperties = securityEnforcementProperties != null
                                 ? securityEnforcementProperties
                                 : new SecurityEnforcementProperties();
+                this.idempotencyService = idempotencyService;
+                this.idempotencyFingerprintService = idempotencyFingerprintService;
+        }
+
+        public ReservationServiceImpl(
+                        ReservationRepository reservationRepository,
+                        ReservationMapper reservationMapper,
+                        PropertyRepository propertyRepository,
+                        GuestRepository guestRepository,
+                        BookingSourceRepository bookingSourceRepository,
+                        ReservationRoomRepository reservationRoomRepository,
+                        RoomAssignmentRepository roomAssignmentRepository,
+                        RoomRepository roomRepository,
+                        RoomTypeRepository roomTypeRepository,
+                        ReservationRoomMapper reservationRoomMapper,
+                        GuestPropertyAssociationService guestPropertyAssociationService,
+                        EntityManager entityManager,
+                        Clock clock,
+                        StaffAuthorizationService staffAuthorizationService,
+                        SecurityEnforcementProperties securityEnforcementProperties) {
+                this(reservationRepository, reservationMapper, propertyRepository, guestRepository,
+                                bookingSourceRepository, reservationRoomRepository, roomAssignmentRepository,
+                                roomRepository, roomTypeRepository, reservationRoomMapper,
+                                guestPropertyAssociationService, entityManager, clock,
+                                staffAuthorizationService, securityEnforcementProperties, null, null);
         }
 
         @Override
         public ReservationResponse createReservation(
                         ReservationCreateRequest request) {
+                return createReservationIdempotent(request, null).data();
+        }
 
+        @Override
+        public IdempotentResult<ReservationResponse> createReservationIdempotent(
+                        ReservationCreateRequest request,
+                        String idempotencyKey) {
+
+                if (idempotencyKey == null) {
+                        return new IdempotentResult<>(executeCreateReservation(request), false, null);
+                }
+
+                if (idempotencyService != null) {
+                        idempotencyService.validateKeyHeader(idempotencyKey);
+                }
+
+                validateProperty(request.getPropertyId());
+                validateGuest(request.getPrimaryGuestId());
+                guestPropertyAssociationService.validateExistingGuestUsableAtProperty(
+                                request.getPrimaryGuestId(), request.getPropertyId());
+                @SuppressWarnings("unused")
+                BookingSource bookingSource = validateBookingSource(request.getBookingSourceId());
+
+                validateExternalBookingId(
+                                request.getBookingSourceId(),
+                                request.getExternalBookingId());
+
+                validateDates(
+                        request.getCheckInDate(),
+                        request.getCheckOutDate());
+
+                if (idempotencyService == null || idempotencyFingerprintService == null) {
+                        return new IdempotentResult<>(executeCreateReservation(request), false, idempotencyKey);
+                }
+
+                String fingerprint = idempotencyFingerprintService.generateReservationFingerprint(request);
+                UUID principalId = idempotencyService.resolvePrincipalId();
+
+                ClaimOutcome outcome = idempotencyService.claimKey(
+                                request.getPropertyId(),
+                                IdempotencyOperation.CREATE_RESERVATION,
+                                principalId,
+                                idempotencyKey,
+                                fingerprint);
+
+                if (outcome instanceof ClaimOutcome.Replay replay) {
+                        ReservationResponse existing = getReservationById(replay.resourceId());
+                        if (!existing.getPropertyId().equals(request.getPropertyId())) {
+                                throw new BusinessValidationException("Replayed reservation does not belong to the target property.");
+                        }
+                        return new IdempotentResult<>(existing, true, idempotencyKey);
+                }
+
+                ClaimOutcome.Claimed claimed = (ClaimOutcome.Claimed) outcome;
+
+                lockRoomTypesInDeterministicOrder(
+                                request.getReservationRooms().stream()
+                                                .map(r -> r.getRoomTypeId())
+                                                .toList());
+
+                validateRequestedRoomTypesAndAvailability(request);
+
+                Reservation reservation = reservationMapper.toEntity(request);
+                Reservation savedReservation = reservationRepository.saveAndFlush(reservation);
+
+                List<ReservationRoom> reservationRoomsToSave = request.getReservationRooms()
+                                .stream()
+                                .map(roomRequest -> reservationRoomMapper.toEntity(
+                                                roomRequest,
+                                                savedReservation.getId()))
+                                .toList();
+
+                reservationRoomRepository.saveAll(reservationRoomsToSave);
+
+                guestPropertyAssociationService.recordReservationActivity(
+                                request.getPrimaryGuestId(), request.getPropertyId());
+
+                idempotencyService.completeClaim(claimed.claimId(), savedReservation.getId(), 201);
+
+                return new IdempotentResult<>(reservationMapper.toResponse(savedReservation), false, idempotencyKey);
+        }
+
+        private ReservationResponse executeCreateReservation(ReservationCreateRequest request) {
                 validateProperty(request.getPropertyId());
                 validateGuest(request.getPrimaryGuestId());
                 guestPropertyAssociationService.validateExistingGuestUsableAtProperty(
