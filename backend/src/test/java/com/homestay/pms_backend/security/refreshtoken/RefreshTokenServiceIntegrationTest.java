@@ -229,7 +229,7 @@ class RefreshTokenServiceIntegrationTest {
 
         // Simultaneous second rotation attempt on the same old token (within 10s grace window)
         assertThatThrownBy(() -> refreshTokenService.rotateToken(initial.rawToken(), "127.0.0.1", "Agent Tab 2"))
-                .isInstanceOf(InvalidRefreshTokenException.class);
+                .isInstanceOf(RefreshTokenCollisionException.class);
 
         // Verify that the family was NOT revoked: the first successor remains the single active token
         Integer activeCount = adminJdbcTemplate.queryForObject(
@@ -296,8 +296,7 @@ class RefreshTokenServiceIntegrationTest {
         // Non-existent token format
         String randomFakeToken = tokenGenerator.generateToken();
         assertThatThrownBy(() -> refreshTokenService.rotateToken(randomFakeToken, "127.0.0.1", "Agent"))
-                .isInstanceOf(InvalidRefreshTokenException.class)
-                .hasMessageContaining("Presented refresh token does not exist");
+                .isInstanceOf(InvalidRefreshTokenException.class);
 
         // Expired token (set created_at = now - 8 days, expires_at = now - 1 hour to satisfy expires_at > created_at)
         adminJdbcTemplate.update(

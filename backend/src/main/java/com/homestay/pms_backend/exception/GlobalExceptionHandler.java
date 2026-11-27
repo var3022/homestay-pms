@@ -1,8 +1,10 @@
 package com.homestay.pms_backend.exception;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.homestay.pms_backend.security.StaffAuthenticationException;
 import com.homestay.pms_backend.security.refreshtoken.AuthCookieManager;
 import com.homestay.pms_backend.security.refreshtoken.InvalidRefreshTokenException;
+import com.homestay.pms_backend.security.refreshtoken.RefreshTokenCollisionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -57,6 +59,27 @@ public class GlobalExceptionHandler {
         return ResponseEntity
                 .status(HttpStatus.UNAUTHORIZED)
                 .header(HttpHeaders.SET_COOKIE, clearCookie.toString())
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .header(HttpHeaders.PRAGMA, "no-cache")
+                .body(response);
+    }
+
+    @ExceptionHandler(RefreshTokenCollisionException.class)
+    public ResponseEntity<ErrorResponse> handleRefreshTokenCollision(
+            RefreshTokenCollisionException exception) {
+
+        log.info("Concurrent refresh token rotation collision: {}", exception.getMessage());
+
+        ErrorResponse response = new ErrorResponse(
+                Instant.now(),
+                HttpStatus.CONFLICT.value(),
+                "Conflict",
+                "A concurrent refresh attempt rotated this session within the grace window.",
+                "REFRESH_CONCURRENCY_COLLISION"
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
                 .header(HttpHeaders.CACHE_CONTROL, "no-store")
                 .header(HttpHeaders.PRAGMA, "no-cache")
                 .body(response);
@@ -377,8 +400,13 @@ public class GlobalExceptionHandler {
             Instant timestamp,
             int status,
             String error,
-            String message
+            String message,
+            @JsonInclude(JsonInclude.Include.NON_NULL)
+            String code
     ) {
+        public ErrorResponse(Instant timestamp, int status, String error, String message) {
+            this(timestamp, status, error, message, null);
+        }
     }
 
     public record ValidationErrorResponse(

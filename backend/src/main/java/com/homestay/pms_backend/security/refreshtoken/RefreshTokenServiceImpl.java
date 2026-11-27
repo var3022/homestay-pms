@@ -163,22 +163,28 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
         String sanitizedIp = sanitizeIp(clientIp);
         String sanitizedUserAgent = sanitizeUserAgent(userAgent);
 
-        record RotationDbResult(
-                boolean success,
-                UUID newId,
+        record RotationOutcomeRecord(
+                String outcome,
+                UUID newTokenId,
                 UUID staffUserId,
                 UUID tokenFamily,
                 int sequenceNumber,
-                Instant expiresAt,
-                String failureReason
+                Instant expiresAt
         ) {}
 
-        RotationDbResult dbResult = authTransactionTemplate.execute(status -> {
-            UUID newId;
+        RotationOutcomeRecord dbResult = authTransactionTemplate.execute(status -> {
             try {
-                newId = authJdbcTemplate.queryForObject(
-                        "SELECT fn_rotate_refresh_token(?, ?, ?, ?, ?)",
-                        UUID.class,
+                return authJdbcTemplate.queryForObject(
+                        "SELECT outcome, new_token_id, staff_user_id, token_family, sequence_number, expires_at " +
+                        "FROM fn_rotate_refresh_token_v2(?, ?, ?, ?, ?)",
+                        (rs, rowNum) -> new RotationOutcomeRecord(
+                                rs.getString("outcome"),
+                                rs.getObject("new_token_id", UUID.class),
+                                rs.getObject("staff_user_id", UUID.class),
+                                rs.getObject("token_family", UUID.class),
+                                rs.getInt("sequence_number"),
+                                rs.getTimestamp("expires_at") != null ? rs.getTimestamp("expires_at").toInstant() : null
+                        ),
                         oldTokenHash,
                         newTokenHash,
                         Timestamp.from(newExpiresAt),
@@ -186,71 +192,79 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
                         sanitizedIp
                 );
             } catch (DataAccessException e) {
-                String msg = e.getMessage();
-                if (msg != null && msg.contains("Presented refresh token does not exist")) {
-                    log.warn("Rejected rotation attempt: presented refresh token not found in database");
-                    return new RotationDbResult(false, null, null, null, 0, null, "Presented refresh token does not exist");
-                }
                 log.error("Internal database error during refresh token rotation: {}", e.getMessage());
                 throw e;
             }
-
-            if (newId == null) {
-                log.warn("Token rotation rejected by database routine fn_rotate_refresh_token");
-                return new RotationDbResult(false, null, null, null, 0, null, "Token rotation rejected by database policy");
-            }
-
-            return authJdbcTemplate.queryForObject(
-                    "SELECT id, staff_user_id, token_family, sequence_number, expires_at FROM staff_refresh_tokens WHERE id = ?",
-                    (rs, rowNum) -> new RotationDbResult(
-                            true,
-                            rs.getObject("id", UUID.class),
-                            rs.getObject("staff_user_id", UUID.class),
-                            rs.getObject("token_family", UUID.class),
-                            rs.getInt("sequence_number"),
-                            rs.getTimestamp("expires_at").toInstant(),
-                            null
-                    ),
-                    newId
-            );
         });
 
-        if (dbResult == null || !dbResult.success()) {
-            throw new InvalidRefreshTokenException(
-                    (dbResult != null && dbResult.failureReason() != null)
-                            ? dbResult.failureReason()
-                            : "Token rotation rejected"
-            );
+        if (dbResult == null) {
+            log.error("Null database result during refresh token rotation");
+            throw new InvalidRefreshTokenException("Token rotation failed");
         }
 
-        UUID staffUserId = dbResult.staffUserId();
-        try {
-            Map<String, Object> staff = authJdbcTemplate.queryForMap(
-                    "SELECT is_locked, lockout_until FROM staff_users WHERE id = ?",
-                    staffUserId
-            );
-            boolean isLocked = Boolean.TRUE.equals(staff.get("is_locked"));
-            if (isLocked) {
-                Timestamp lockoutUntil = (Timestamp) staff.get("lockout_until");
-                if (lockoutUntil == null || lockoutUntil.toInstant().isAfter(clock.instant())) {
-                    log.warn("Refusing to return rotated token for locked staff user [{}]", staffUserId);
-                    revokeSession(newRawToken, staffUserId, "system:auth");
-                    throw new InvalidRefreshTokenException("Staff account is locked");
+        String outcome = dbResult.outcome();
+        log.info("Refresh token rotation outcome from database: [{}]", outcome);
+
+        switch (outcome) {
+            case "SUCCESS" -> {
+                UUID staffUserId = dbResult.staffUserId();
+                try {
+                    Map<String, Object> staff = authJdbcTemplate.queryForMap(
+                            "SELECT is_locked, lockout_until FROM staff_users WHERE id = ?",
+                            staffUserId
+                    );
+                    boolean isLocked = Boolean.TRUE.equals(staff.get("is_locked"));
+                    if (isLocked) {
+                        Timestamp lockoutUntil = (Timestamp) staff.get("lockout_until");
+                        if (lockoutUntil == null || lockoutUntil.toInstant().isAfter(clock.instant())) {
+                            log.warn("Refusing to return rotated token for locked staff user [{}]", staffUserId);
+                            revokeSession(newRawToken, staffUserId, "system:auth");
+                            throw new InvalidRefreshTokenException("Staff account is locked");
+                        }
+                    }
+                } catch (DataAccessException e) {
+                    log.error("Failed to verify staff account lock state during rotation: {}", e.getMessage());
+                    throw e;
                 }
-            }
-        } catch (DataAccessException e) {
-            log.error("Failed to verify staff account lock state during rotation: {}", e.getMessage());
-            throw e;
-        }
 
-        return new RotatedRefreshToken(
-                newRawToken,
-                dbResult.newId(),
-                dbResult.tokenFamily(),
-                dbResult.sequenceNumber(),
-                dbResult.expiresAt(),
-                dbResult.staffUserId()
-        );
+                return new RotatedRefreshToken(
+                        newRawToken,
+                        dbResult.newTokenId(),
+                        dbResult.tokenFamily(),
+                        dbResult.sequenceNumber(),
+                        dbResult.expiresAt(),
+                        staffUserId
+                );
+            }
+            case "CONCURRENCY_COLLISION" -> {
+                log.info("Refresh token rotation collision detected within grace window (family={})", dbResult.tokenFamily());
+                throw new RefreshTokenCollisionException("A concurrent refresh attempt rotated this session within the grace window");
+            }
+            case "REPLAY_DETECTED" -> {
+                log.warn("Refresh token replay attack detected and family revoked (family={})", dbResult.tokenFamily());
+                throw new InvalidRefreshTokenException("Invalid or expired session");
+            }
+            case "TOKEN_EXPIRED" -> {
+                log.warn("Refresh token expired (family={})", dbResult.tokenFamily());
+                throw new InvalidRefreshTokenException("Invalid or expired session");
+            }
+            case "ACCOUNT_DEACTIVATED" -> {
+                log.warn("Refresh token rejected: staff account is deactivated (user={})", dbResult.staffUserId());
+                throw new InvalidRefreshTokenException("Staff account is deactivated");
+            }
+            case "ACCOUNT_LOCKED" -> {
+                log.warn("Refresh token rejected: staff account is locked (user={})", dbResult.staffUserId());
+                throw new InvalidRefreshTokenException("Staff account is locked");
+            }
+            case "INVALID_TOKEN" -> {
+                log.warn("Refresh token rejected: invalid or non-existent token presented");
+                throw new InvalidRefreshTokenException("Invalid or expired session");
+            }
+            default -> {
+                log.error("Unknown rotation outcome [{}]", outcome);
+                throw new InvalidRefreshTokenException("Token rotation failed");
+            }
+        }
     }
 
     @Override

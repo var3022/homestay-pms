@@ -139,4 +139,23 @@ class GlobalExceptionHandlerUnitTest {
         assertThat(response.getBody().error()).isEqualTo("Forbidden");
         assertThat(response.getBody().message()).isEqualTo("Access is denied.");
     }
+
+    @Test
+    @DisplayName("RefreshTokenCollisionException returns HTTP 409 Conflict with stable code and no Set-Cookie")
+    void shouldHandleRefreshTokenCollisionException() {
+        com.homestay.pms_backend.security.refreshtoken.RefreshTokenCollisionException ex =
+                new com.homestay.pms_backend.security.refreshtoken.RefreshTokenCollisionException("Concurrent rotation");
+
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response = exceptionHandler.handleRefreshTokenCollision(ex);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getHeaders().getFirst(HttpHeaders.CACHE_CONTROL)).isEqualTo("no-store");
+        assertThat(response.getHeaders().getFirst(HttpHeaders.PRAGMA)).isEqualTo("no-cache");
+        assertThat(response.getHeaders().getFirst(HttpHeaders.SET_COOKIE)).isNull();
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().status()).isEqualTo(409);
+        assertThat(response.getBody().error()).isEqualTo("Conflict");
+        assertThat(response.getBody().code()).isEqualTo("REFRESH_CONCURRENCY_COLLISION");
+        assertThat(response.getBody().message()).contains("grace window");
+    }
 }

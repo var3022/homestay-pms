@@ -348,16 +348,16 @@ class StaffAuthRefreshLogoutIntegrationTest {
         assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
 
         int successCount = 0;
-        int failureCount = 0;
+        int collisionCount = 0;
         for (Future<Integer> f : futures) {
             int status = f.get();
             if (status == 200) successCount++;
-            else if (status == 401) failureCount++;
+            else if (status == 409) collisionCount++;
         }
 
-        // Exactly one concurrent call must succeed, the other fails safely
+        // Exactly one concurrent call must succeed, the other receives 409 collision
         assertThat(successCount).isEqualTo(1);
-        assertThat(failureCount).isEqualTo(1);
+        assertThat(collisionCount).isEqualTo(1);
     }
 
     @Test

@@ -344,7 +344,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     // =========================================================================
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED direct writes to staff_global_roles")
     void shouldDenyDirectWriteToStaffGlobalRoles() {
         UUID userId = createTestUser("escalate_direct@homestay.com");
@@ -359,7 +358,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Privilege Escalation Protection: pms_app is strictly DENIED execution of fn_assign_staff_global_role")
     void shouldDenyAssignGlobalRoleToPmsApp() {
         UUID userId = createTestUser("escalate_assign@homestay.com");
@@ -374,7 +372,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Privilege Escalation Protection: pms_app is strictly DENIED execution of fn_revoke_staff_global_role")
     void shouldDenyRevokeGlobalRoleToPmsApp() {
         UUID userId = createTestUser("escalate_revoke@homestay.com");
@@ -389,7 +386,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Forged Actor Identity: pms_app cannot escalate even when supplying a legitimate superadmin ID as actor")
     void shouldRejectForgedActorIdentityUnderPmsApp() {
         UUID userId = createTestUser("spoofed_actor@homestay.com");
@@ -500,7 +496,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED direct INSERT on staff_property_roles")
     void shouldDenyDirectInsertOnStaffPropertyRolesByPmsApp() {
         UUID userId = createTestUser("deny_insert_prop@homestay.com");
@@ -517,7 +512,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED direct UPDATE on staff_property_roles")
     void shouldDenyDirectUpdateOnStaffPropertyRolesByPmsApp() {
         UUID propertyId = getExistingPropertyId();
@@ -532,7 +526,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED direct DELETE on staff_property_roles")
     void shouldDenyDirectDeleteOnStaffPropertyRolesByPmsApp() {
         UUID propertyId = getExistingPropertyId();
@@ -547,7 +540,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED execution of fn_assign_staff_property_role")
     void shouldDenyPmsAppFromCallingFnAssignStaffPropertyRole() {
         UUID userId = createTestUser("deny_prop_assign@homestay.com");
@@ -561,7 +553,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED execution of fn_revoke_staff_property_role")
     void shouldDenyPmsAppFromCallingFnRevokeStaffPropertyRole() {
         UUID userId = createTestUser("deny_prop_revoke@homestay.com");
@@ -650,7 +641,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     // =========================================================================
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED direct updates to password_hash")
     void shouldDenyDirectUpdateOnPasswordHash() {
         UUID userId = createTestUser("field_protect_hash@homestay.com");
@@ -665,7 +655,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED direct updates to password_changed_at")
     void shouldDenyDirectUpdateOnPasswordChangedAt() {
         UUID userId = createTestUser("field_protect_changed@homestay.com");
@@ -680,7 +669,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED direct updates to is_active")
     void shouldDenyDirectUpdateOnIsActive() {
         UUID userId = createTestUser("field_protect_active@homestay.com");
@@ -695,7 +683,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED direct updates to is_locked")
     void shouldDenyDirectUpdateOnIsLocked() {
         UUID userId = createTestUser("field_protect_locked@homestay.com");
@@ -710,7 +697,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED direct updates to failed_login_attempts")
     void shouldDenyDirectUpdateOnFailedLoginAttempts() {
         UUID userId = createTestUser("field_protect_attempts@homestay.com");
@@ -725,7 +711,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED direct updates to lockout_until")
     void shouldDenyDirectUpdateOnLockoutUntil() {
         UUID userId = createTestUser("field_protect_until@homestay.com");
@@ -740,7 +725,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Operational Update: Runtime role pms_app can update profile fields (first_name, last_name, phone, updated_at)")
     void shouldAllowDirectUpdateOnOperationalStaffUserFields() {
         UUID userId = createTestUser("profile_update_" + UUID.randomUUID() + "@homestay.com");
@@ -814,7 +798,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED execution of fn_set_staff_active_status")
     void shouldDenyPmsAppFromCallingFnSetStaffActiveStatus() {
         UUID userId = createTestUser("deny_status_proc@homestay.com");
@@ -955,7 +938,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED execution of fn_admin_reset_staff_password")
     void shouldDenyPmsAppFromCallingFnAdminResetStaffPassword() {
         UUID userId = createTestUser("deny_pass_reset@homestay.com");
@@ -969,7 +951,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED execution of fn_staff_self_update_password")
     void shouldDenyPmsAppFromCallingFnStaffSelfUpdatePassword() {
         UUID userId = createTestUser("deny_pass_self@homestay.com");
@@ -983,7 +964,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     }
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Runtime role pms_app is strictly DENIED execution of fn_update_staff_password")
     void shouldDenyPmsAppFromCallingFnUpdateStaffPassword() {
         UUID userId = createTestUser("deny_pass_legacy@homestay.com");
@@ -1001,7 +981,6 @@ class StaffAuthDatabaseFoundationIntegrationTest {
     // =========================================================================
 
     @Test
-    @Transactional
     @DisplayName("Negative Test: Untrusted caller (pms_app) is strictly DENIED directly asserting login success (p_success = TRUE)")
     void shouldDenyPmsAppFromDirectlyAssertingLoginSuccess() {
         String email = "deny_success_assert@homestay.com";

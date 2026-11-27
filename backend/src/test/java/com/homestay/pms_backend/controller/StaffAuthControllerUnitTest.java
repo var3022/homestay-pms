@@ -374,6 +374,32 @@ class StaffAuthControllerUnitTest {
     }
 
     @Test
+    @DisplayName("Unit: Concurrent rotation collision throws RefreshTokenCollisionException, returning 409 and preserving cookie")
+    void shouldHandleRefreshTokenCollisionWithoutClearingCookie() throws Exception {
+        String rawToken = "colliding-refresh-token-43-chars-example-string";
+
+        when(cookieManager.extractRefreshToken(any())).thenReturn(rawToken);
+        when(clientContextExtractor.extract(any())).thenReturn(new ClientContext("192.168.1.100", "Mozilla/5.0 UnitTester"));
+        when(refreshTokenService.rotateToken(eq(rawToken), eq("192.168.1.100"), eq("Mozilla/5.0 UnitTester")))
+                .thenThrow(new com.homestay.pms_backend.security.refreshtoken.RefreshTokenCollisionException("A concurrent refresh attempt rotated this session"));
+
+        mockMvc.perform(post(REFRESH_URL)
+                        .header("Origin", "http://localhost:3000"))
+                .andExpect(status().isConflict())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(header().string(HttpHeaders.PRAGMA, "no-cache"))
+                .andExpect(header().doesNotExist(HttpHeaders.SET_COOKIE))
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.error").value("Conflict"))
+                .andExpect(jsonPath("$.code").value("REFRESH_CONCURRENCY_COLLISION"));
+
+        verify(originValidator).validate(any());
+        verify(refreshTokenService).rotateToken(rawToken, "192.168.1.100", "Mozilla/5.0 UnitTester");
+        verifyNoInteractions(accessTokenService);
+        verify(cookieManager, never()).createRemovalCookie();
+    }
+
+    @Test
     @DisplayName("Unit: Missing refresh cookie is rejected with 401 and clears cookie")
     void shouldRejectRefreshOnMissingCookie() throws Exception {
         org.springframework.http.ResponseCookie clearCookie =
