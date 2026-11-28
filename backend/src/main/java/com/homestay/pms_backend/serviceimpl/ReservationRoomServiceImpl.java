@@ -15,16 +15,17 @@ import com.homestay.pms_backend.repository.ReservationRepository;
 import com.homestay.pms_backend.repository.ReservationRoomRepository;
 import com.homestay.pms_backend.repository.RoomRepository;
 import com.homestay.pms_backend.repository.RoomTypeRepository;
+import com.homestay.pms_backend.service.ReservationPricingService;
 import com.homestay.pms_backend.service.ReservationRoomService;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 
 @Service
-@RequiredArgsConstructor
 @Transactional
 public class ReservationRoomServiceImpl implements ReservationRoomService {
 
@@ -33,6 +34,32 @@ public class ReservationRoomServiceImpl implements ReservationRoomService {
     private final ReservationRepository reservationRepository;
     private final RoomTypeRepository roomTypeRepository;
     private final RoomRepository roomRepository;
+    private final ReservationPricingService reservationPricingService;
+
+    public ReservationRoomServiceImpl(
+            ReservationRoomRepository reservationRoomRepository,
+            ReservationRoomMapper reservationRoomMapper,
+            ReservationRepository reservationRepository,
+            RoomTypeRepository roomTypeRepository,
+            RoomRepository roomRepository) {
+        this(reservationRoomRepository, reservationRoomMapper, reservationRepository, roomTypeRepository, roomRepository, null);
+    }
+
+    @Autowired
+    public ReservationRoomServiceImpl(
+            ReservationRoomRepository reservationRoomRepository,
+            ReservationRoomMapper reservationRoomMapper,
+            ReservationRepository reservationRepository,
+            RoomTypeRepository roomTypeRepository,
+            RoomRepository roomRepository,
+            @Autowired(required = false) ReservationPricingService reservationPricingService) {
+        this.reservationRoomRepository = reservationRoomRepository;
+        this.reservationRoomMapper = reservationRoomMapper;
+        this.reservationRepository = reservationRepository;
+        this.roomTypeRepository = roomTypeRepository;
+        this.roomRepository = roomRepository;
+        this.reservationPricingService = reservationPricingService != null ? reservationPricingService : new ReservationPricingService();
+    }
 
     @Override
     public ReservationRoomResponse addReservationRoom(ReservationRoomAddRequest request) {
@@ -117,6 +144,15 @@ public class ReservationRoomServiceImpl implements ReservationRoomService {
 
         ReservationRoom reservationRoom =
                 reservationRoomMapper.toEntity(request);
+
+        BigDecimal subtotal = reservationPricingService.calculateAccommodationSubtotal(
+                request.getQuantity(),
+                0,
+                request.getUnitPrice(),
+                reservation.getCheckInDate(),
+                reservation.getCheckOutDate()
+        );
+        reservationRoom.setSubtotal(subtotal);
 
         ReservationRoom savedReservationRoom =
                 reservationRoomRepository.saveAndFlush(reservationRoom);

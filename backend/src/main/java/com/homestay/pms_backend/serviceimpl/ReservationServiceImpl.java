@@ -27,6 +27,7 @@ import com.homestay.pms_backend.service.ClaimOutcome;
 import com.homestay.pms_backend.service.GuestPropertyAssociationService;
 import com.homestay.pms_backend.service.IdempotencyFingerprintService;
 import com.homestay.pms_backend.service.IdempotencyService;
+import com.homestay.pms_backend.service.ReservationPricingService;
 import com.homestay.pms_backend.service.ReservationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -45,6 +46,7 @@ import com.homestay.pms_backend.security.authorization.StaffAuthorizationService
 import jakarta.persistence.EntityManager;
 import org.springframework.beans.factory.annotation.Autowired;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.DateTimeException;
 import java.time.Instant;
@@ -87,6 +89,7 @@ public class ReservationServiceImpl implements ReservationService {
         private final SecurityEnforcementProperties securityEnforcementProperties;
         private final IdempotencyService idempotencyService;
         private final IdempotencyFingerprintService idempotencyFingerprintService;
+        private final ReservationPricingService reservationPricingService;
 
         @Autowired
         public ReservationServiceImpl(
@@ -106,7 +109,8 @@ public class ReservationServiceImpl implements ReservationService {
                         @Autowired(required = false) StaffAuthorizationService staffAuthorizationService,
                         @Autowired(required = false) SecurityEnforcementProperties securityEnforcementProperties,
                         @Autowired(required = false) IdempotencyService idempotencyService,
-                        @Autowired(required = false) IdempotencyFingerprintService idempotencyFingerprintService) {
+                        @Autowired(required = false) IdempotencyFingerprintService idempotencyFingerprintService,
+                        @Autowired(required = false) ReservationPricingService reservationPricingService) {
                 this.reservationRepository = reservationRepository;
                 this.reservationMapper = reservationMapper;
                 this.propertyRepository = propertyRepository;
@@ -126,6 +130,35 @@ public class ReservationServiceImpl implements ReservationService {
                                 : new SecurityEnforcementProperties();
                 this.idempotencyService = idempotencyService;
                 this.idempotencyFingerprintService = idempotencyFingerprintService;
+                this.reservationPricingService = reservationPricingService != null
+                                ? reservationPricingService
+                                : new ReservationPricingService();
+        }
+
+        public ReservationServiceImpl(
+                        ReservationRepository reservationRepository,
+                        ReservationMapper reservationMapper,
+                        PropertyRepository propertyRepository,
+                        GuestRepository guestRepository,
+                        BookingSourceRepository bookingSourceRepository,
+                        ReservationRoomRepository reservationRoomRepository,
+                        RoomAssignmentRepository roomAssignmentRepository,
+                        RoomRepository roomRepository,
+                        RoomTypeRepository roomTypeRepository,
+                        ReservationRoomMapper reservationRoomMapper,
+                        GuestPropertyAssociationService guestPropertyAssociationService,
+                        EntityManager entityManager,
+                        Clock clock,
+                        StaffAuthorizationService staffAuthorizationService,
+                        SecurityEnforcementProperties securityEnforcementProperties,
+                        IdempotencyService idempotencyService,
+                        IdempotencyFingerprintService idempotencyFingerprintService) {
+                this(reservationRepository, reservationMapper, propertyRepository, guestRepository,
+                                bookingSourceRepository, reservationRoomRepository, roomAssignmentRepository,
+                                roomRepository, roomTypeRepository, reservationRoomMapper,
+                                guestPropertyAssociationService, entityManager, clock,
+                                staffAuthorizationService, securityEnforcementProperties,
+                                idempotencyService, idempotencyFingerprintService, null);
         }
 
         public ReservationServiceImpl(
@@ -148,7 +181,7 @@ public class ReservationServiceImpl implements ReservationService {
                                 bookingSourceRepository, reservationRoomRepository, roomAssignmentRepository,
                                 roomRepository, roomTypeRepository, reservationRoomMapper,
                                 guestPropertyAssociationService, entityManager, clock,
-                                staffAuthorizationService, securityEnforcementProperties, null, null);
+                                staffAuthorizationService, securityEnforcementProperties, null, null, null);
         }
 
         @Override
@@ -221,9 +254,19 @@ public class ReservationServiceImpl implements ReservationService {
 
                 List<ReservationRoom> reservationRoomsToSave = request.getReservationRooms()
                                 .stream()
-                                .map(roomRequest -> reservationRoomMapper.toEntity(
-                                                roomRequest,
-                                                savedReservation.getId()))
+                                .map(roomRequest -> {
+                                        ReservationRoom entity = reservationRoomMapper.toEntity(
+                                                        roomRequest,
+                                                        savedReservation.getId());
+                                        BigDecimal subtotal = reservationPricingService.calculateAccommodationSubtotal(
+                                                        roomRequest.getQuantity(),
+                                                        0,
+                                                        roomRequest.getUnitPrice(),
+                                                        savedReservation.getCheckInDate(),
+                                                        savedReservation.getCheckOutDate());
+                                        entity.setSubtotal(subtotal);
+                                        return entity;
+                                })
                                 .toList();
 
                 reservationRoomRepository.saveAll(reservationRoomsToSave);
@@ -265,9 +308,19 @@ public class ReservationServiceImpl implements ReservationService {
 
                 List<ReservationRoom> reservationRoomsToSave = request.getReservationRooms()
                                 .stream()
-                                .map(roomRequest -> reservationRoomMapper.toEntity(
-                                                roomRequest,
-                                                savedReservation.getId()))
+                                .map(roomRequest -> {
+                                        ReservationRoom entity = reservationRoomMapper.toEntity(
+                                                        roomRequest,
+                                                        savedReservation.getId());
+                                        BigDecimal subtotal = reservationPricingService.calculateAccommodationSubtotal(
+                                                        roomRequest.getQuantity(),
+                                                        0,
+                                                        roomRequest.getUnitPrice(),
+                                                        savedReservation.getCheckInDate(),
+                                                        savedReservation.getCheckOutDate());
+                                        entity.setSubtotal(subtotal);
+                                        return entity;
+                                })
                                 .toList();
 
                 reservationRoomRepository.saveAll(reservationRoomsToSave);
@@ -386,6 +439,22 @@ public class ReservationServiceImpl implements ReservationService {
                                         .findByReservationIdForUpdate(reservation.getId());
                         lockRoomTypesForActiveReservationRooms(lockedRooms);
                         validateDateChangeSafety(reservation, targetCheckInDate, targetCheckOutDate, lockedRooms);
+
+                        for (ReservationRoom rr : lockedRooms) {
+                                int activeQuantity = rr.getQuantity() - rr.getCancelledQuantity();
+                                if (rr.getStatus() == ReservationRoomStatus.CANCELLED || activeQuantity <= 0) {
+                                        rr.setSubtotal(BigDecimal.ZERO.setScale(ReservationPricingService.CURRENCY_SCALE, ReservationPricingService.ROUNDING_MODE));
+                                } else if (rr.getUnitPrice() != null) {
+                                        BigDecimal newSubtotal = reservationPricingService.calculateAccommodationSubtotal(
+                                                        rr.getQuantity(),
+                                                        rr.getCancelledQuantity(),
+                                                        rr.getUnitPrice(),
+                                                        targetCheckInDate,
+                                                        targetCheckOutDate);
+                                        rr.setSubtotal(newSubtotal);
+                                }
+                        }
+                        reservationRoomRepository.saveAll(lockedRooms);
                 }
 
                 // Apply changes only to eligible direct reservations.
@@ -685,6 +754,7 @@ public class ReservationServiceImpl implements ReservationService {
                                 reservationRoom.setCancelledQuantity(
                                                 reservationRoom.getQuantity());
                                 reservationRoom.setStatus(ReservationRoomStatus.CANCELLED);
+                                reservationRoom.setSubtotal(BigDecimal.ZERO.setScale(ReservationPricingService.CURRENCY_SCALE, ReservationPricingService.ROUNDING_MODE));
                                 roomsToSave.add(reservationRoom);
                         }
 

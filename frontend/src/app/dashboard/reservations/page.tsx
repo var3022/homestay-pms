@@ -1879,6 +1879,53 @@ export default function ReservationsPage() {
                     })}
                   </div>
                 )}
+
+                {(() => {
+                  const calculatedNights = (() => {
+                    if (!checkInDate || !checkOutDate) return 0;
+                    const inD = new Date(checkInDate);
+                    const outD = new Date(checkOutDate);
+                    const diffTime = outD.getTime() - inD.getTime();
+                    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+                    return diffDays > 0 ? diffDays : 0;
+                  })();
+
+                  const totalEstimatedSubtotal = roomRequests.reduce((sum, r) => {
+                    const price = Number(r.unitPrice);
+                    if (!Number.isFinite(price) || price < 0 || !r.quantity || r.quantity < 1 || calculatedNights < 1) {
+                      return sum;
+                    }
+                    return sum + price * r.quantity * calculatedNights;
+                  }, 0);
+
+                  const hasValidRooms = roomRequests.some(
+                    (r) => Number.isFinite(Number(r.unitPrice)) && Number(r.unitPrice) >= 0 && r.quantity >= 1,
+                  );
+
+                  return (
+                    <div className="mt-4 rounded-xl border border-[#dce2d9] bg-[#f8f9f6] p-4 space-y-2">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="font-medium text-[#435448]">Stay Duration</span>
+                        <span className="font-semibold text-[#24382e]">
+                          {calculatedNights > 0
+                            ? `${calculatedNights} ${calculatedNights === 1 ? "night" : "nights"}`
+                            : "Select valid stay dates (minimum 1 night)"}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="font-medium text-[#435448]">Estimated Accommodation Subtotal</span>
+                        <span className="text-base font-bold text-[#24382e]">
+                          {calculatedNights > 0 && hasValidRooms
+                            ? `₹${totalEstimatedSubtotal.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                            : "—"}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-[#748077] pt-1.5 border-t border-[#e8ebe5]">
+                        * Accommodation Subtotal includes base room charges only for the requested duration. Excludes taxes, extra beds, breakfast, and incidental services.
+                      </p>
+                    </div>
+                  );
+                })()}
               </section>
 
               <section>
@@ -2431,22 +2478,42 @@ export default function ReservationsPage() {
                             </span>
                           </div>
 
-                          <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
                             <div>
-                              <p className="text-xs text-[#89938b]">Unit price</p>
+                              <p className="text-xs text-[#89938b]">Agreed nightly rate</p>
                               <p className="mt-1 font-medium text-[#24382e]">
                                 {Number.isFinite(unitPrice)
-                                  ? `₹${unitPrice.toLocaleString("en-IN")}`
+                                  ? `₹${unitPrice.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                                   : "—"}
+                              </p>
+                              <p className="text-[11px] text-[#89938b]">per room / night</p>
+                            </div>
+
+                            <div>
+                              <p className="text-xs text-[#89938b]">Duration & Rooms</p>
+                              <p className="mt-1 font-medium text-[#24382e]">
+                                {(() => {
+                                  if (!selectedReservation?.checkInDate || !selectedReservation?.checkOutDate) return "1 night";
+                                  const inD = new Date(selectedReservation.checkInDate);
+                                  const outD = new Date(selectedReservation.checkOutDate);
+                                  const diffDays = Math.max(1, Math.round((outD.getTime() - inD.getTime()) / (1000 * 60 * 60 * 24)));
+                                  return `${diffDays} ${diffDays === 1 ? "night" : "nights"}`;
+                                })()}
+                              </p>
+                              <p className="text-[11px] text-[#89938b]">
+                                {getActiveReservedQuantity(reservedRoom)} active {getActiveReservedQuantity(reservedRoom) === 1 ? "room" : "rooms"}
                               </p>
                             </div>
 
                             <div>
-                              <p className="text-xs text-[#89938b]">Subtotal</p>
-                              <p className="mt-1 font-medium text-[#24382e]">
+                              <p className="text-xs text-[#89938b]">Accommodation Subtotal</p>
+                              <p className="mt-1 font-semibold text-[#24382e]">
                                 {subtotal !== null && Number.isFinite(subtotal)
-                                  ? `₹${subtotal.toLocaleString("en-IN")}`
+                                  ? `₹${subtotal.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                                   : "Not provided"}
+                              </p>
+                              <p className="text-[11px] text-[#748077]">
+                                Base accommodation only; excludes tax & incidentals
                               </p>
                             </div>
                           </div>
@@ -2585,6 +2652,34 @@ export default function ReservationsPage() {
                         </div>
                       );
                     })}
+
+                    <div className="mt-3 rounded-xl border border-[#dce2d9] bg-[#f8f9f6] p-4 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-semibold text-[#435448]">Total Accommodation Subtotal</p>
+                        <p className="text-[11px] text-[#748077]">
+                          Base room accommodation for all active rooms. Taxes, extra bed, breakfast, and incidental charges will be itemized in the guest folio.
+                        </p>
+                      </div>
+                      <p className="text-base font-bold text-[#24382e]">
+                        {(() => {
+                          const subtotals = reservationRooms.map((r) =>
+                            r.subtotal != null ? Number(r.subtotal) : null,
+                          );
+                          if (subtotals.some((s) => s === null)) {
+                            const knownSum = subtotals
+                              .filter((s): s is number => s !== null)
+                              .reduce<number>((acc, v) => acc + v, 0);
+                            return knownSum > 0
+                              ? `₹${knownSum.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (partial)`
+                              : "Not provided";
+                          }
+                          const sum = subtotals
+                            .filter((s): s is number => s !== null)
+                            .reduce<number>((acc, v) => acc + v, 0);
+                          return `₹${sum.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                        })()}
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>

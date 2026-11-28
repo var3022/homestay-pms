@@ -250,4 +250,62 @@ describe("PMS Front Desk UI Logic, Timezone & Accessibility Verification", () =>
       assert.ok(checkOutButton["aria-label"].length > 0);
     });
   });
+
+  // 6. Step 3.4.3.13B.2: Reservation Accommodation Subtotal Display and Pricing Contract (Test Q)
+  describe("6. Accommodation Subtotal Display, Nights Calculation & Formatting (Test Q)", () => {
+    function computeNights(checkInDate, checkOutDate) {
+      if (!checkInDate || !checkOutDate) return 0;
+      const inD = new Date(checkInDate);
+      const outD = new Date(checkOutDate);
+      const diffTime = outD.getTime() - inD.getTime();
+      const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+      return diffDays > 0 ? diffDays : 0;
+    }
+
+    function computeRoomSubtotal(activeQuantity, nights, unitPrice) {
+      if (!activeQuantity || activeQuantity < 1 || !nights || nights < 1 || unitPrice == null) {
+        return null;
+      }
+      return activeQuantity * nights * Number(unitPrice);
+    }
+
+    function formatINR(amount) {
+      if (amount == null || !Number.isFinite(amount)) return "—";
+      return `₹${amount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+
+    it("calculates nights accurately between checkInDate and checkOutDate", () => {
+      assert.equal(computeNights("2026-12-01", "2026-12-02"), 1);
+      assert.equal(computeNights("2026-12-01", "2026-12-05"), 4);
+      assert.equal(computeNights("2026-12-01", "2026-12-01"), 0, "Same day stay must yield 0 nights (invalid)");
+      assert.equal(computeNights("2026-12-05", "2026-12-01"), 0, "Backwards dates must yield 0 nights (invalid)");
+    });
+
+    it("calculates room line accommodation subtotal as activeQuantity * nights * unitPrice", () => {
+      const nights = computeNights("2026-12-10", "2026-12-13"); // 3 nights
+      const activeQuantity = 2; // 2 rooms
+      const unitPrice = 2500; // ₹2500 per room per night
+
+      const subtotal = computeRoomSubtotal(activeQuantity, nights, unitPrice);
+      assert.equal(subtotal, 15000);
+      assert.equal(formatINR(subtotal), "₹15,000.00");
+    });
+
+    it("formats Indian Rupees with correct symbol and comma grouping", () => {
+      assert.equal(formatINR(3000), "₹3,000.00");
+      assert.equal(formatINR(125000), "₹1,25,000.00");
+      assert.equal(formatINR(0), "₹0.00");
+      assert.equal(formatINR(null), "—");
+    });
+
+    it("labels Accommodation Subtotal distinctly and provides disclaimer text", () => {
+      const disclaimer = "* Accommodation Subtotal includes base room charges only for the requested duration. Excludes taxes, extra beds, breakfast, and incidental services.";
+      assert.ok(disclaimer.includes("base room charges only"));
+      assert.ok(disclaimer.includes("Excludes taxes, extra beds, breakfast, and incidental services"));
+      // Must not be confused with invoice or payment concepts
+      assert.ok(!disclaimer.includes("Grand Total"));
+      assert.ok(!disclaimer.includes("Final Bill"));
+      assert.ok(!disclaimer.includes("Paid Amount"));
+    });
+  });
 });

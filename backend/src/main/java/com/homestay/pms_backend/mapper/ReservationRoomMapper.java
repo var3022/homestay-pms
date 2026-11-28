@@ -44,6 +44,25 @@ public class ReservationRoomMapper {
         return reservationRoom;
     }
 
+    public ReservationRoom toEntity(
+            ReservationRoomCreateRequest request,
+            UUID reservationId,
+            java.math.BigDecimal subtotal) {
+
+        ReservationRoom reservationRoom = toEntity(request, reservationId);
+        reservationRoom.setSubtotal(subtotal);
+        return reservationRoom;
+    }
+
+    public ReservationRoom toEntity(
+            ReservationRoomAddRequest request,
+            java.math.BigDecimal subtotal) {
+
+        ReservationRoom reservationRoom = toEntity(request);
+        reservationRoom.setSubtotal(subtotal);
+        return reservationRoom;
+    }
+
     public ReservationRoomResponse toResponse(
             ReservationRoom reservationRoom) {
 
