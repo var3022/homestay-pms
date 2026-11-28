@@ -764,6 +764,7 @@ class RoomHousekeepingIntegrationTest {
         ReservationRoomCreateRequest rrReq = new ReservationRoomCreateRequest();
         rrReq.setRoomTypeId(roomTypeIdA);
         rrReq.setQuantity(1);
+        rrReq.setUnitPrice(new BigDecimal("2500.00"));
         req.setReservationRooms(List.of(rrReq));
 
         ReservationResponse response = reservationService.createReservation(req);

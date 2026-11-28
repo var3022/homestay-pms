@@ -493,4 +493,122 @@ class ReservationPricingIntegrationTest {
         assertThat(rr.getUnitPrice()).isEqualByComparingTo("3000.00"); // Preserved!
         assertThat(rr.getSubtotal()).isEqualByComparingTo("0.00");     // Active subtotal is 0.00
     }
+
+    @Test
+    @DisplayName("Direct service call: rejects null unitPrice on creation and rolls back completely")
+    void testDirectServiceCall_rejectsNullUnitPrice_andPersistsNoReservationOrRoomLines() {
+        long resCountBefore = reservationRepository.count();
+        long roomCountBefore = reservationRoomRepository.count();
+
+        ReservationCreateRequest request = new ReservationCreateRequest();
+        request.setPropertyId(testProperty.getId());
+        request.setPrimaryGuestId(testGuest.getId());
+        request.setBookingSourceId(directBookingSourceId);
+        request.setCheckInDate(LocalDate.of(2026, 12, 20));
+        request.setCheckOutDate(LocalDate.of(2026, 12, 22));
+        request.setAdults(2);
+
+        ReservationRoomCreateRequest roomA = new ReservationRoomCreateRequest();
+        roomA.setRoomTypeId(roomTypeA.getId());
+        roomA.setQuantity(1);
+        roomA.setUnitPrice(null); // Explicit null price!
+        request.setReservationRooms(List.of(roomA));
+
+        assertThatThrownBy(() -> reservationService.createReservation(request))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Unit price must not be null");
+
+        // Assert zero entities persisted (transactional rollback & pre-save validation)
+        assertThat(reservationRepository.count()).isEqualTo(resCountBefore);
+        assertThat(reservationRoomRepository.count()).isEqualTo(roomCountBefore);
+    }
+
+    @Test
+    @DisplayName("Direct service call: rejects negative unitPrice on creation and rolls back")
+    void testDirectServiceCall_rejectsNegativeUnitPrice_andPersistsNoReservationOrRoomLines() {
+        long resCountBefore = reservationRepository.count();
+        long roomCountBefore = reservationRoomRepository.count();
+
+        ReservationCreateRequest request = new ReservationCreateRequest();
+        request.setPropertyId(testProperty.getId());
+        request.setPrimaryGuestId(testGuest.getId());
+        request.setBookingSourceId(directBookingSourceId);
+        request.setCheckInDate(LocalDate.of(2026, 12, 20));
+        request.setCheckOutDate(LocalDate.of(2026, 12, 22));
+        request.setAdults(2);
+
+        ReservationRoomCreateRequest roomA = new ReservationRoomCreateRequest();
+        roomA.setRoomTypeId(roomTypeA.getId());
+        roomA.setQuantity(1);
+        roomA.setUnitPrice(new BigDecimal("-50.00"));
+        request.setReservationRooms(List.of(roomA));
+
+        assertThatThrownBy(() -> reservationService.createReservation(request))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Unit price cannot be negative");
+
+        assertThat(reservationRepository.count()).isEqualTo(resCountBefore);
+        assertThat(reservationRoomRepository.count()).isEqualTo(roomCountBefore);
+    }
+
+    @Test
+    @DisplayName("Direct service call: addReservationRoom rejects null unitPrice and persists no room line")
+    void testDirectServiceCall_addReservationRoom_rejectsNullUnitPrice() {
+        // Create a valid reservation first
+        ReservationCreateRequest request = new ReservationCreateRequest();
+        request.setPropertyId(testProperty.getId());
+        request.setPrimaryGuestId(testGuest.getId());
+        request.setBookingSourceId(directBookingSourceId);
+        request.setCheckInDate(LocalDate.of(2026, 12, 25));
+        request.setCheckOutDate(LocalDate.of(2026, 12, 27));
+        request.setAdults(2);
+
+        ReservationRoomCreateRequest roomA = new ReservationRoomCreateRequest();
+        roomA.setRoomTypeId(roomTypeA.getId());
+        roomA.setQuantity(1);
+        roomA.setUnitPrice(new BigDecimal("2500.00"));
+        request.setReservationRooms(List.of(roomA));
+
+        ReservationResponse res = reservationService.createReservation(request);
+        long roomCountBefore = reservationRoomRepository.count();
+
+        ReservationRoomAddRequest addReq = new ReservationRoomAddRequest();
+        addReq.setReservationId(res.getId());
+        addReq.setRoomTypeId(roomTypeB.getId());
+        addReq.setQuantity(1);
+        addReq.setUnitPrice(null); // Null unitPrice!
+
+        assertThatThrownBy(() -> reservationRoomService.addReservationRoom(addReq))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Unit price must not be null");
+
+        assertThat(reservationRoomRepository.count()).isEqualTo(roomCountBefore);
+    }
+
+    @Test
+    @DisplayName("Explicit zero price complimentary booking succeeds and persists 0.00 subtotal")
+    void testExplicitZeroPrice_complimentaryBookingSucceeds() {
+        ReservationCreateRequest request = new ReservationCreateRequest();
+        request.setPropertyId(testProperty.getId());
+        request.setPrimaryGuestId(testGuest.getId());
+        request.setBookingSourceId(directBookingSourceId);
+        request.setCheckInDate(LocalDate.of(2026, 12, 28));
+        request.setCheckOutDate(LocalDate.of(2026, 12, 30)); // 2 nights
+        request.setAdults(1);
+
+        ReservationRoomCreateRequest roomA = new ReservationRoomCreateRequest();
+        roomA.setRoomTypeId(roomTypeA.getId());
+        roomA.setQuantity(1);
+        roomA.setUnitPrice(BigDecimal.ZERO); // Explicit complimentary!
+        request.setReservationRooms(List.of(roomA));
+
+        ReservationResponse res = reservationService.createReservation(request);
+        assertThat(res).isNotNull();
+        assertThat(res.getStatus()).isEqualTo(ReservationStatus.PENDING);
+
+        List<ReservationRoom> rooms = reservationRoomRepository.findByReservationId(res.getId());
+        assertThat(rooms).hasSize(1);
+        assertThat(rooms.get(0).getUnitPrice()).isEqualByComparingTo("0.00");
+        assertThat(rooms.get(0).getSubtotal()).isEqualByComparingTo("0.00");
+    }
 }

@@ -180,4 +180,16 @@ class ReservationPricingServiceTest {
                 .isInstanceOf(BusinessValidationException.class)
                 .hasMessageContaining("Cancelled quantity cannot exceed total quantity");
     }
+
+    @Test
+    @DisplayName("Rejects null unit price")
+    void calculateAccommodationSubtotal_rejectsNullUnitPrice() {
+        LocalDate checkIn = LocalDate.of(2026, 12, 1);
+        LocalDate checkOut = LocalDate.of(2026, 12, 2);
+
+        assertThatThrownBy(() -> pricingService.calculateAccommodationSubtotal(
+                1, 0, null, checkIn, checkOut))
+                .isInstanceOf(BusinessValidationException.class)
+                .hasMessageContaining("Unit price must not be null");
+    }
 }

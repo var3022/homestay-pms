@@ -1217,6 +1217,7 @@ class ReservationCheckOutIntegrationTest {
         ReservationRoomCreateRequest rrReq = new ReservationRoomCreateRequest();
         rrReq.setRoomTypeId(roomTypeIdA1);
         rrReq.setQuantity(1);
+        rrReq.setUnitPrice(new BigDecimal("2500.00"));
         req.setReservationRooms(List.of(rrReq));
 
         setupSecurityContext(staffIdAdminA, "propadmin-a" + TEST_DOMAIN);

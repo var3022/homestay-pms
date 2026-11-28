@@ -64,6 +64,13 @@ public class ReservationRoomServiceImpl implements ReservationRoomService {
     @Override
     public ReservationRoomResponse addReservationRoom(ReservationRoomAddRequest request) {
 
+        if (request.getUnitPrice() == null) {
+            throw new BusinessValidationException("Unit price must not be null");
+        }
+        if (request.getUnitPrice().compareTo(BigDecimal.ZERO) < 0) {
+            throw new BusinessValidationException("Unit price cannot be negative");
+        }
+
         Reservation reservation = reservationRepository.findByIdForUpdate(request.getReservationId())
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Reservation not found with id: " + request.getReservationId()

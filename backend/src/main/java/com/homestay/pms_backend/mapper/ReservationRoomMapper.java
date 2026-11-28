@@ -49,6 +49,9 @@ public class ReservationRoomMapper {
             UUID reservationId,
             java.math.BigDecimal subtotal) {
 
+        if (subtotal == null) {
+            throw new com.homestay.pms_backend.exception.BusinessValidationException("Accommodation subtotal must not be null");
+        }
         ReservationRoom reservationRoom = toEntity(request, reservationId);
         reservationRoom.setSubtotal(subtotal);
         return reservationRoom;
@@ -58,6 +61,9 @@ public class ReservationRoomMapper {
             ReservationRoomAddRequest request,
             java.math.BigDecimal subtotal) {
 
+        if (subtotal == null) {
+            throw new com.homestay.pms_backend.exception.BusinessValidationException("Accommodation subtotal must not be null");
+        }
         ReservationRoom reservationRoom = toEntity(request);
         reservationRoom.setSubtotal(subtotal);
         return reservationRoom;

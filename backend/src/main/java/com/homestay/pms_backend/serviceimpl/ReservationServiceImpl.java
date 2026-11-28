@@ -585,6 +585,12 @@ public class ReservationServiceImpl implements ReservationService {
                 Set<UUID> requestedRoomTypeIds = new HashSet<>();
 
                 for (var roomRequest : request.getReservationRooms()) {
+                        if (roomRequest.getUnitPrice() == null) {
+                                throw new BusinessValidationException("Unit price must not be null");
+                        }
+                        if (roomRequest.getUnitPrice().compareTo(BigDecimal.ZERO) < 0) {
+                                throw new BusinessValidationException("Unit price cannot be negative");
+                        }
 
                         UUID roomTypeId = roomRequest.getRoomTypeId();
 
